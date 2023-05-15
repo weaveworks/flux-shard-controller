@@ -1,0 +1,12 @@
+apiVersion: templates.weave.works/v1alpha1
+kind: FluxShardSet
+metadata:
+  labels:
+    app.kubernetes.io/name: fluxshardset
+    app.kubernetes.io/instance: fluxshardset-sample
+    app.kubernetes.io/part-of: flux-shard-controller
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: flux-shard-controller
+  name: fluxshardset-sample
+spec:
+  # TODO(user): Add fields here
