@@ -28,8 +28,20 @@ type FluxShardSetSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Foo is an example field of FluxShardSet. Edit fluxshardset_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// Type is the type of the deployment, e.g. kustomization, helm, source, notification
+	// TODO: make this an enum
+	// TODO: make this required
+	Type string `json:"type,omitempty"`
+
+	// Shards is a list of shards to deploy
+	Shards []ShardSpec `json:"shards,omitempty"`
+}
+
+// ShardSpec defines a shard to deploy
+type ShardSpec struct {
+	// Name is the name of the shard
+	// TODO: make this required
+	Name string `json:"name,omitempty"`
 }
 
 // FluxShardSetStatus defines the observed state of FluxShardSet
