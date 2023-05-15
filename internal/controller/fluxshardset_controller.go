@@ -47,9 +47,18 @@ type FluxShardSetReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.14.4/pkg/reconcile
 func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	// TODO(user): your logic here
+	shardSet := &templatesv1alpha1.FluxShardSet{}
+	if err := r.Get(ctx, req.NamespacedName, shardSet); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	logger.Info("Reconciling shardSet",
+		"type", shardSet.Spec.Type,
+		"shards", shardSet.Spec.Shards,
+	)
 
 	return ctrl.Result{}, nil
 }
