@@ -6,21 +6,24 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 )
 
 // NewDeploymentFromDeployment takes a Deployment loaded from the Cluster and
 // clears out the Metadata fields that are needed in the cluster.
 func NewDeploymentFromDeployment(src appsv1.Deployment) *appsv1.Deployment {
-	// remove or clear
-	// creationTimestamp
-	// deployment.kubernetes.io annotation
-	// generation
-	// resourceVersion
-	// uid
-	// status
-
-	// add managed-by label TODO: find out what this label is.
+	src.CreationTimestamp = metav1.Time{}
+	if len(src.Annotations) > 1 {
+		delete(src.Annotations, "deployment.kubernetes.io/revision")
+	} else {
+		src.Annotations = nil
+	}
+	src.Generation = 0
+	src.ResourceVersion = ""
+	src.UID = ""
+	src.Status = appsv1.DeploymentStatus{}
+	src.Labels["app.kubernetes.io/managed-by"] = "flux-shard-controller"
 
 	return &src
 }

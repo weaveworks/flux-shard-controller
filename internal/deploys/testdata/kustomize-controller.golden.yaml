@@ -7,6 +7,7 @@ metadata:
     app.kubernetes.io/part-of: flux
     app.kubernetes.io/version: v2.0.0-rc.1
     # TODO: Insert the managed-by standard label! 
+    app.kubernetes.io/managed-by: flux-shard-controller
     control-plane: controller
   name: kustomize-controller
   namespace: flux-system
