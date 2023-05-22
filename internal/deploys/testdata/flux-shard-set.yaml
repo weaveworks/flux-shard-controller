@@ -1,0 +1,9 @@
+apiVersion: templates.weave.works/v1alpha1
+kind: FluxShardSet
+metadata:
+  name: fluxshardset-sample
+spec:
+  type: kustomize
+  shards:
+    - name: kustomize-controller
+    - name: kustomize-controller-2

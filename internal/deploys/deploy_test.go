@@ -44,10 +44,7 @@ func TestMatchDeploymentsWithShards(t *testing.T) {
 		t.Fatalf("failed to unmarshal YAML fluxshardset %s: %s", fluxShardSetFilename, err)
 	}
 
-	matchingDeps, err := GetDeploymentsMatchingFluxShardSet(fluxShardSet, deployments)
-	if err != nil {
-		t.Fatalf("failed to match deployments with shards: %s", err)
-	}
+	matchingDeps := GetDeploymentsMatchingFluxShardSet(fluxShardSet, deployments)
 
 	want := []*appsv1.Deployment{loadDeploymentFixture(t, "testdata/kustomize-controller.yaml"), loadDeploymentFixture(t, "testdata/kustomize-controller-2.yaml")}
 
@@ -64,6 +61,75 @@ func TestNewDeploymentFromDeployment(t *testing.T) {
 	want := loadDeploymentFixture(t, "testdata/kustomize-controller.golden.yaml")
 	if diff := cmp.Diff(want, newDeploy); diff != "" {
 		t.Fatalf("failed to generate new deployment:\n%s", diff)
+	}
+}
+
+func TestGenerateDeployments(t *testing.T) {
+	tests := []struct {
+		name         string
+		fluxShardSet v1alpha1.FluxShardSet
+		deployments  []string
+		want         []string
+	}{
+		{
+			name: "generate deployment matching fluxshardset shard name",
+			fluxShardSet: v1alpha1.FluxShardSet{
+				Spec: v1alpha1.FluxShardSetSpec{
+					Type: "kustomize",
+					Shards: []v1alpha1.ShardSpec{
+						{
+							Name: "kustomize-controller",
+						},
+					},
+				},
+			},
+			deployments: []string{
+				"testdata/kustomize-controller.yaml",
+				"testdata/kustomize-controller-2.yaml",
+			},
+			want: []string{
+				"testdata/kustomize-controller.golden.yaml",
+			},
+		},
+		{
+			name: "no deployment matching fluxshardset shard name",
+			fluxShardSet: v1alpha1.FluxShardSet{
+				Spec: v1alpha1.FluxShardSetSpec{
+					Type: "kustomize",
+					Shards: []v1alpha1.ShardSpec{
+						{
+							Name: "shard-1",
+						},
+					},
+				},
+			},
+			deployments: []string{
+				"testdata/kustomize-controller.yaml",
+				"testdata/kustomize-controller-2.yaml",
+			},
+			want: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := []*appsv1.Deployment{}
+			for _, d := range tt.deployments {
+				deps = append(deps, loadDeploymentFixture(t, d))
+			}
+
+			generatedDeps := GenerateDeployments(&tt.fluxShardSet, deps)
+
+			wantDeps := []*appsv1.Deployment{}
+			for _, d := range tt.want {
+				wantDeps = append(wantDeps, loadDeploymentFixture(t, d))
+			}
+
+			if diff := cmp.Diff(wantDeps, generatedDeps); diff != "" {
+				t.Fatalf("generated deployments dont match wanted: \n%s", diff)
+			}
+
+		})
 	}
 }
 

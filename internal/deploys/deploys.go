@@ -4,7 +4,6 @@ import (
 	"github.com/weaveworks/flux-shard-controller/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	
 )
 
 // NewDeploymentFromDeployment takes a Deployment loaded from the Cluster and
@@ -26,7 +25,7 @@ func NewDeploymentFromDeployment(src appsv1.Deployment) *appsv1.Deployment {
 }
 
 // GetDeploymentsMatchingFluxShardSet returns a list of deployments that match the shards in fluxShardSet given
-func GetDeploymentsMatchingFluxShardSet(fluxShardSet *v1alpha1.FluxShardSet, allDeployments []*appsv1.Deployment) ([]*appsv1.Deployment, error) {
+func GetDeploymentsMatchingFluxShardSet(fluxShardSet *v1alpha1.FluxShardSet, allDeployments []*appsv1.Deployment) []*appsv1.Deployment {
 	matchingDeployments := []*appsv1.Deployment{}
 
 	for _, d := range allDeployments {
@@ -35,7 +34,7 @@ func GetDeploymentsMatchingFluxShardSet(fluxShardSet *v1alpha1.FluxShardSet, all
 		}
 	}
 
-	return matchingDeployments, nil
+	return matchingDeployments
 }
 
 // // Given a fluxShardSet, return a list of names/labels to match with deployments
@@ -57,4 +56,18 @@ func DeploymentMatchesShard(fluxShardSet *v1alpha1.FluxShardSet, deployment apps
 		}
 	}
 	return false
+}
+
+// GenerateDeployments creates list of new deployments from the given deployments that match the filtering in the fluxShardSet
+func GenerateDeployments(fluxShardSet *v1alpha1.FluxShardSet, deployments []*appsv1.Deployment) []*appsv1.Deployment {
+	matchingDeps := GetDeploymentsMatchingFluxShardSet(fluxShardSet, deployments)
+
+	// Generate new deployments
+	newDeployments := []*appsv1.Deployment{}
+	for _, existingDeployment := range matchingDeps {
+		newDeployment := NewDeploymentFromDeployment(*existingDeployment)
+		newDeployments = append(newDeployments, newDeployment)
+	}
+	return newDeployments
+
 }
