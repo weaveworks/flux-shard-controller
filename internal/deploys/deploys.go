@@ -1,10 +1,15 @@
 package deploys
 
 import (
+	"fmt"
+
 	"github.com/weaveworks/flux-shard-controller/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+const ignoreShardsSelector = "!sharding.fluxcd.io/key"
 
 // NewDeploymentFromDeployment takes a Deployment loaded from the Cluster and
 // clears out the Metadata fields that are needed in the cluster.
@@ -58,16 +63,26 @@ func DeploymentMatchesShard(fluxShardSet *v1alpha1.FluxShardSet, deployment apps
 	return false
 }
 
-// GenerateDeployments creates list of new deployments from the given deployments that match the filtering in the fluxShardSet
-func GenerateDeployments(fluxShardSet *v1alpha1.FluxShardSet, deployments []*appsv1.Deployment) []*appsv1.Deployment {
-	matchingDeps := GetDeploymentsMatchingFluxShardSet(fluxShardSet, deployments)
-
-	// Generate new deployments
-	newDeployments := []*appsv1.Deployment{}
-	for _, existingDeployment := range matchingDeps {
-		newDeployment := NewDeploymentFromDeployment(*existingDeployment)
-		newDeployments = append(newDeployments, newDeployment)
+// GenerateDeployments creates list of new deployments to process the set of
+// shards declared in the ShardSet.
+func GenerateDeployments(fluxShardSet *v1alpha1.FluxShardSet, src *appsv1.Deployment) ([]*appsv1.Deployment, error) {
+	if !deploymentIgnoresShardLabels(src) {
+		return nil, fmt.Errorf("deployment %s is not configured to ignore sharding", client.ObjectKeyFromObject(src))
 	}
-	return newDeployments
 
+	return nil, nil
+}
+
+func deploymentIgnoresShardLabels(deploy *appsv1.Deployment) bool {
+	wantArg := fmt.Sprintf("--watch-label-selector=%s", ignoreShardsSelector)
+	for i := range deploy.Spec.Template.Spec.Containers {
+		container := deploy.Spec.Template.Spec.Containers[i]
+		for _, arg := range container.Args {
+			if arg == wantArg {
+				return true
+			}
+		}
+	}
+
+	return false
 }
