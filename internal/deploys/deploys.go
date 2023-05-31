@@ -1,9 +1,12 @@
 package deploys
 
 import (
+	"fmt"
+
 	"github.com/weaveworks/flux-shard-controller/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // NewDeploymentFromDeployment takes a Deployment loaded from the Cluster and
@@ -59,15 +62,33 @@ func DeploymentMatchesShard(fluxShardSet *v1alpha1.FluxShardSet, deployment apps
 }
 
 // GenerateDeployments creates list of new deployments from the given deployments that match the filtering in the fluxShardSet
-func GenerateDeployments(fluxShardSet *v1alpha1.FluxShardSet, deployments []*appsv1.Deployment) []*appsv1.Deployment {
-	matchingDeps := GetDeploymentsMatchingFluxShardSet(fluxShardSet, deployments)
-
-	// Generate new deployments
-	newDeployments := []*appsv1.Deployment{}
-	for _, existingDeployment := range matchingDeps {
-		newDeployment := NewDeploymentFromDeployment(*existingDeployment)
-		newDeployments = append(newDeployments, newDeployment)
+func GenerateDeployments(fluxShardSet *v1alpha1.FluxShardSet, src *appsv1.Deployment) ([]*appsv1.Deployment, error) {
+	if !deploymentIgnoresShards(src) {
+		return nil, fmt.Errorf("deployment %s is not configured to ignore sharding", client.ObjectKeyFromObject(src))
 	}
-	return newDeployments
 
+	// matchingDeps := GetDeploymentsMatchingFluxShardSet(fluxShardSet, deployments)
+
+	// // Generate new deployments
+	// newDeployments := []*appsv1.Deployment{}
+	// for _, existingDeployment := range matchingDeps {
+	// 	newDeployment := NewDeploymentFromDeployment(*existingDeployment)
+	// 	newDeployments = append(newDeployments, newDeployment)
+	// }
+	// return newDeployments
+
+	return nil, nil
+}
+
+func deploymentIgnoresShards(deploy *appsv1.Deployment) bool {
+	for i := range deploy.Spec.Template.Spec.Containers {
+		container := deploy.Spec.Template.Spec.Containers[i]
+		for _, arg := range container.Args {
+			if arg == "--watch-label-selector=sharding.fluxcd.io/key notin (shard1)" {
+				return true
+			}
+		}
+	}
+
+	return false
 }
