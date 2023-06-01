@@ -9,6 +9,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const ignoreShardsSelector = "!sharding.fluxcd.io/key"
+
 // NewDeploymentFromDeployment takes a Deployment loaded from the Cluster and
 // clears out the Metadata fields that are needed in the cluster.
 func NewDeploymentFromDeployment(src appsv1.Deployment) *appsv1.Deployment {
@@ -61,30 +63,22 @@ func DeploymentMatchesShard(fluxShardSet *v1alpha1.FluxShardSet, deployment apps
 	return false
 }
 
-// GenerateDeployments creates list of new deployments from the given deployments that match the filtering in the fluxShardSet
+// GenerateDeployments creates list of new deployments to process the set of
+// shards declared in the ShardSet.
 func GenerateDeployments(fluxShardSet *v1alpha1.FluxShardSet, src *appsv1.Deployment) ([]*appsv1.Deployment, error) {
-	if !deploymentIgnoresShards(src) {
+	if !deploymentIgnoresShardLabels(src) {
 		return nil, fmt.Errorf("deployment %s is not configured to ignore sharding", client.ObjectKeyFromObject(src))
 	}
-
-	// matchingDeps := GetDeploymentsMatchingFluxShardSet(fluxShardSet, deployments)
-
-	// // Generate new deployments
-	// newDeployments := []*appsv1.Deployment{}
-	// for _, existingDeployment := range matchingDeps {
-	// 	newDeployment := NewDeploymentFromDeployment(*existingDeployment)
-	// 	newDeployments = append(newDeployments, newDeployment)
-	// }
-	// return newDeployments
 
 	return nil, nil
 }
 
-func deploymentIgnoresShards(deploy *appsv1.Deployment) bool {
+func deploymentIgnoresShardLabels(deploy *appsv1.Deployment) bool {
+	wantArg := fmt.Sprintf("--watch-label-selector=%s", ignoreShardsSelector)
 	for i := range deploy.Spec.Template.Spec.Containers {
 		container := deploy.Spec.Template.Spec.Containers[i]
 		for _, arg := range container.Args {
-			if arg == "--watch-label-selector=sharding.fluxcd.io/key notin (shard1)" {
+			if arg == wantArg {
 				return true
 			}
 		}

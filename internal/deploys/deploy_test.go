@@ -86,14 +86,17 @@ func TestGenerateDeployments(t *testing.T) {
 			},
 			src: newTestDeployment(func(d *appsv1.Deployment) {
 				d.Spec.Template.Spec.Containers[0].Args = []string{
-					"--watch-label-selector=sharding.fluxcd.io/key notin (shard1)",
+					"--watch-label-selector=!sharding.fluxcd.io/key",
 				}
 			}),
-			wantDeps: []*appsv1.Deployment{},
+			wantDeps: nil,
 		},
 		{
 			name: "generation when one shard is defined",
 			fluxShardSet: &shardv1.FluxShardSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-shard-set",
+				},
 				Spec: shardv1.FluxShardSetSpec{
 					Type: "kustomize",
 					Shards: []shardv1.ShardSpec{
@@ -105,11 +108,15 @@ func TestGenerateDeployments(t *testing.T) {
 			},
 			src: newTestDeployment(func(d *appsv1.Deployment) {
 				d.Spec.Template.Spec.Containers[0].Args = []string{
-					"--watch-label-selector=sharding.fluxcd.io/key notin (shard-1)",
+					"--watch-label-selector=!sharding.fluxcd.io/key",
 				}
 			}),
 			wantDeps: []*appsv1.Deployment{
 				newTestDeployment(func(d *appsv1.Deployment) {
+					d.ObjectMeta.Labels = map[string]string{
+						"templates.weave.works/shard-set": "test-shard-set",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+					}
 					d.ObjectMeta.Name = "shard-1-kustomization-controller"
 					d.Spec.Template.Spec.Containers[0].Args = []string{
 						"--watch-label-selector=sharding.fluxcd.io/key in (shard-1)",
@@ -134,17 +141,25 @@ func TestGenerateDeployments(t *testing.T) {
 			},
 			src: newTestDeployment(func(d *appsv1.Deployment) {
 				d.Spec.Template.Spec.Containers[0].Args = []string{
-					"--watch-label-selector=sharding.fluxcd.io/key notin (shard-a, shard-b)",
+					"--watch-label-selector=!sharding.fluxcd.io/key",
 				}
 			}),
 			wantDeps: []*appsv1.Deployment{
 				newTestDeployment(func(d *appsv1.Deployment) {
+					d.ObjectMeta.Labels = map[string]string{
+						"templates.weave.works/shard-set": "test-shard-set",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+					}
 					d.ObjectMeta.Name = "shard-a-kustomization-controller"
 					d.Spec.Template.Spec.Containers[0].Args = []string{
 						"--watch-label-selector=sharding.fluxcd.io/key in (shard-a)",
 					}
 				}),
 				newTestDeployment(func(d *appsv1.Deployment) {
+					d.ObjectMeta.Labels = map[string]string{
+						"templates.weave.works/shard-set": "test-shard-set",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+					}
 					d.ObjectMeta.Name = "shard-b-kustomization-controller"
 					d.Spec.Template.Spec.Containers[0].Args = []string{
 						"--watch-label-selector=sharding.fluxcd.io/key in (shard-b)",
@@ -242,38 +257,49 @@ func newTestDeployment(opts ...func(*appsv1.Deployment)) *appsv1.Deployment {
 	return deploy
 }
 
+// This test is a test of the LabelSelector mechanism and could be removed.
 func TestLabelSelectorShards(t *testing.T) {
 	selectorTests := []struct {
 		selector string
 		labels   map[string]string
-		match    bool
+		ignore   bool
 	}{
 		{
 			selector: "sharding.fluxcd.io/key notin (shard-1)",
 			labels: map[string]string{
+				"example.com/my-key":     "testing",
 				"sharding.fluxcd.io/key": "test-1",
 			},
-			match: true,
+			ignore: true,
 		},
 		{
 			selector: "sharding.fluxcd.io/key notin (shard-1)",
 			labels: map[string]string{
+				"example.com/my-key":     "testing",
 				"sharding.fluxcd.io/key": "shard-1",
 			},
-			match: false,
+			ignore: false,
+		},
+		{
+			selector: "!sharding.fluxcd.io/key",
+			labels: map[string]string{
+				"example.com/my-key":     "testing",
+				"sharding.fluxcd.io/key": "shard-1",
+			},
+			ignore: false,
 		},
 	}
 
 	for _, tt := range selectorTests {
 		t.Run(tt.selector, func(t *testing.T) {
-			s, err := metav1.ParseToLabelSelector(tt.selector)
+			s, err := labels.Parse(tt.selector)
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			lbls := labels.Set(tt.labels)
-			if m := s.Matches(lbls); m != tt.match {
-				t.Fatalf("match %s against %v got %v, want %v", tt.selector, tt.labels, m, tt.match)
+			if m := s.Matches(lbls); m != tt.ignore {
+				t.Fatalf("match %s against %v got %v, want %v", tt.selector, tt.labels, m, tt.ignore)
 			}
 		})
 	}
