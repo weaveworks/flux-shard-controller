@@ -2,7 +2,6 @@ package deploys
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/weaveworks/flux-shard-controller/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -13,9 +12,9 @@ import (
 const ignoreShardsSelector = "!sharding.fluxcd.io/key"
 const shardsSelector = "sharding.fluxcd.io/key"
 
-// NewDeploymentFromDeployment takes a Deployment loaded from the Cluster and
+// newDeploymentFromDeployment takes a Deployment loaded from the Cluster and
 // clears out the Metadata fields that are needed in the cluster.
-func NewDeploymentFromDeployment(src appsv1.Deployment) *appsv1.Deployment {
+func newDeploymentFromDeployment(src appsv1.Deployment) *appsv1.Deployment {
 	depl := src.DeepCopy()
 	depl.CreationTimestamp = metav1.Time{}
 	if len(depl.Annotations) > 1 {
@@ -31,8 +30,8 @@ func NewDeploymentFromDeployment(src appsv1.Deployment) *appsv1.Deployment {
 	return depl
 }
 
-// UpdateNewDeployment updates the deployment with sharding related fields such as name and required labels
-func UpdateNewDeployment(depl *appsv1.Deployment, shardsetName string, shardName string) {
+// updateNewDeployment updates the deployment with sharding related fields such as name and required labels
+func updateNewDeployment(depl *appsv1.Deployment, shardsetName string, shardName string) {
 	// Add sharding labels
 	depl.Labels = map[string]string{}
 	depl.Labels["app.kubernetes.io/managed-by"] = "flux-shard-controller"
@@ -52,14 +51,11 @@ func GenerateDeployments(fluxShardSet *v1alpha1.FluxShardSet, src *appsv1.Deploy
 	}
 	generatedDeployments := []*appsv1.Deployment{}
 	for _, shard := range fluxShardSet.Spec.Shards {
-		deployment := NewDeploymentFromDeployment(*src)
-		UpdateNewDeployment(deployment, fluxShardSet.Name, shard.Name)
+		deployment := newDeploymentFromDeployment(*src)
+		updateNewDeployment(deployment, fluxShardSet.Name, shard.Name)
 		generatedDeployments = append(generatedDeployments, deployment)
 	}
 
-	if len(generatedDeployments) == 0 {
-		return nil, nil
-	}
 	return generatedDeployments, nil
 }
 
@@ -68,7 +64,7 @@ func deploymentIgnoresShardLabels(deploy *appsv1.Deployment) bool {
 	for i := range deploy.Spec.Template.Spec.Containers {
 		container := deploy.Spec.Template.Spec.Containers[i]
 		for _, arg := range container.Args {
-			if strings.HasPrefix(arg, wantArg) {
+			if arg == wantArg {
 				return true
 			}
 		}

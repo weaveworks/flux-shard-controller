@@ -18,7 +18,7 @@ import (
 func TestNewDeploymentFromDeployment(t *testing.T) {
 	depl := loadDeploymentFixture(t, "testdata/kustomize-controller.yaml")
 
-	newDeploy := NewDeploymentFromDeployment(*depl)
+	newDeploy := newDeploymentFromDeployment(*depl)
 
 	want := loadDeploymentFixture(t, "testdata/kustomize-controller.golden.yaml")
 	if diff := cmp.Diff(want, newDeploy); diff != "" {
@@ -46,7 +46,7 @@ func TestGenerateDeployments(t *testing.T) {
 					"--watch-label-selector=!sharding.fluxcd.io/key",
 				}
 			}),
-			wantDeps: nil,
+			wantDeps: []*appsv1.Deployment{},
 		},
 		{
 			name: "generation when one shard is defined",
