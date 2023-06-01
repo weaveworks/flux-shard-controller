@@ -84,12 +84,11 @@ func deploymentIgnoresShardLabels(deploy *appsv1.Deployment) bool {
 	return false
 }
 
-func replaceArg(args []string, oldArg string, newArg string) []string {
+func replaceArg(args []string, oldArg string, newArg string) {
 	for i := range args {
 		if args[i] == oldArg {
 			args[i] = newArg
-			return args
+			return
 		}
 	}
-	return args
 }
