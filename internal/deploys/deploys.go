@@ -2,6 +2,7 @@ package deploys
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/weaveworks/flux-shard-controller/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -10,57 +11,37 @@ import (
 )
 
 const ignoreShardsSelector = "!sharding.fluxcd.io/key"
+const shardsSelector = "sharding.fluxcd.io/key"
 
 // NewDeploymentFromDeployment takes a Deployment loaded from the Cluster and
 // clears out the Metadata fields that are needed in the cluster.
 func NewDeploymentFromDeployment(src appsv1.Deployment) *appsv1.Deployment {
-	src.CreationTimestamp = metav1.Time{}
-	if len(src.Annotations) > 1 {
-		delete(src.Annotations, "deployment.kubernetes.io/revision")
+	depl := src.DeepCopy()
+	depl.CreationTimestamp = metav1.Time{}
+	if len(depl.Annotations) > 1 {
+		delete(depl.Annotations, "deployment.kubernetes.io/revision")
 	} else {
-		src.Annotations = nil
+		depl.Annotations = nil
 	}
-	src.Generation = 0
-	src.ResourceVersion = ""
-	src.UID = ""
-	src.Status = appsv1.DeploymentStatus{}
-	src.Labels["app.kubernetes.io/managed-by"] = "flux-shard-controller"
+	depl.Generation = 0
+	depl.ResourceVersion = ""
+	depl.UID = ""
+	depl.Status = appsv1.DeploymentStatus{}
 
-	return &src
+	return depl
 }
 
-// GetDeploymentsMatchingFluxShardSet returns a list of deployments that match the shards in fluxShardSet given
-func GetDeploymentsMatchingFluxShardSet(fluxShardSet *v1alpha1.FluxShardSet, allDeployments []*appsv1.Deployment) []*appsv1.Deployment {
-	matchingDeployments := []*appsv1.Deployment{}
+// UpdateNewDeployment updates the deployment with sharding related fields such as name and required labels
+func UpdateNewDeployment(depl *appsv1.Deployment, shardsetName string, shardName string) {
+	// Add sharding labels
+	depl.Labels = map[string]string{}
+	depl.Labels["app.kubernetes.io/managed-by"] = "flux-shard-controller"
+	depl.ObjectMeta.Labels["templates.weave.works/shard-set"] = shardsetName
+	selectorArgs := fmt.Sprintf("--watch-label-selector=%s in (%s)", shardsSelector, shardName)
+	depl.Spec.Template.Spec.Containers[0].Args = []string{selectorArgs}
 
-	for _, d := range allDeployments {
-		if DeploymentMatchesShard(fluxShardSet, *d) {
-			matchingDeployments = append(matchingDeployments, d)
-		}
-	}
-
-	return matchingDeployments
-}
-
-// // Given a fluxShardSet, return a list of names/labels to match with deployments
-// func ShardNamesFromFluxShardSets(fluxShardSet *v1alpha1.FluxShardSet) ([]string, error) {
-// 	shards := []string{}
-// 	for _, shard := range fluxShardSet.Spec.Shards {
-// 		shards = append(shards, shard.Name)
-// 	}
-// 	return shards, nil
-
-// }
-
-// DeploymentMatchesShard returns true if the deployment matches a shard in the fluxShardSet
-// matching is done by comparing the shards list and the deployment name
-func DeploymentMatchesShard(fluxShardSet *v1alpha1.FluxShardSet, deployment appsv1.Deployment) bool {
-	for _, shard := range fluxShardSet.Spec.Shards {
-		if shard.Name == deployment.Name {
-			return true
-		}
-	}
-	return false
+	// Update deplyment name
+	depl.ObjectMeta.Name = fmt.Sprintf("%s-%s", shardName, depl.ObjectMeta.Name)
 }
 
 // GenerateDeployments creates list of new deployments to process the set of
@@ -69,8 +50,17 @@ func GenerateDeployments(fluxShardSet *v1alpha1.FluxShardSet, src *appsv1.Deploy
 	if !deploymentIgnoresShardLabels(src) {
 		return nil, fmt.Errorf("deployment %s is not configured to ignore sharding", client.ObjectKeyFromObject(src))
 	}
+	generatedDeployments := []*appsv1.Deployment{}
+	for _, shard := range fluxShardSet.Spec.Shards {
+		deployment := NewDeploymentFromDeployment(*src)
+		UpdateNewDeployment(deployment, fluxShardSet.Name, shard.Name)
+		generatedDeployments = append(generatedDeployments, deployment)
+	}
 
-	return nil, nil
+	if len(generatedDeployments) == 0 {
+		return nil, nil
+	}
+	return generatedDeployments, nil
 }
 
 func deploymentIgnoresShardLabels(deploy *appsv1.Deployment) bool {
@@ -78,7 +68,7 @@ func deploymentIgnoresShardLabels(deploy *appsv1.Deployment) bool {
 	for i := range deploy.Spec.Template.Spec.Containers {
 		container := deploy.Spec.Template.Spec.Containers[i]
 		for _, arg := range container.Args {
-			if arg == wantArg {
+			if strings.HasPrefix(arg, wantArg) {
 				return true
 			}
 		}

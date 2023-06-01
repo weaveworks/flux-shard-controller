@@ -15,49 +15,6 @@ import (
 	shardv1 "github.com/weaveworks/flux-shard-controller/api/v1alpha1"
 )
 
-func TestDeploymentMatchesShardfn(t *testing.T) {
-	fluxShardSet := &shardv1.FluxShardSet{}
-	fluxShardSet.Spec.Shards = append(fluxShardSet.Spec.Shards, shardv1.ShardSpec{Name: "shard1"})
-
-	deployment := appsv1.Deployment{}
-	// matching false when it should match
-	deployment.Name = "shard1"
-	if !DeploymentMatchesShard(fluxShardSet, deployment) {
-		t.Fatalf("failed to match shard1")
-	}
-
-	// Matching true when it shouldnt
-	deployment.Name = "shard2"
-	if DeploymentMatchesShard(fluxShardSet, deployment) {
-		t.Fatalf("matched shard2")
-	}
-}
-
-func TestMatchDeploymentsWithShards(t *testing.T) {
-	deployments := []*appsv1.Deployment{}
-	deployments = append(deployments, loadDeploymentFixture(t, "testdata/kustomize-controller.yaml"))
-	deployments = append(deployments, loadDeploymentFixture(t, "testdata/kustomize-controller-2.yaml"))
-
-	fluxShardSetFilename := "testdata/flux-shard-set.yaml"
-	b, err := os.ReadFile(fluxShardSetFilename)
-	if err != nil {
-		t.Fatalf("failed to read flux-shard-set: %s", err)
-	}
-
-	fluxShardSet := &shardv1.FluxShardSet{}
-	if err := yaml.Unmarshal(b, fluxShardSet); err != nil {
-		t.Fatalf("failed to unmarshal YAML fluxshardset %s: %s", fluxShardSetFilename, err)
-	}
-
-	matchingDeps := GetDeploymentsMatchingFluxShardSet(fluxShardSet, deployments)
-
-	want := []*appsv1.Deployment{loadDeploymentFixture(t, "testdata/kustomize-controller.yaml"), loadDeploymentFixture(t, "testdata/kustomize-controller-2.yaml")}
-
-	if diff := cmp.Diff(want, matchingDeps); diff != "" {
-		t.Fatalf("failed to generate new deployment:\n%s", diff)
-	}
-}
-
 func TestNewDeploymentFromDeployment(t *testing.T) {
 	depl := loadDeploymentFixture(t, "testdata/kustomize-controller.yaml")
 
@@ -117,7 +74,7 @@ func TestGenerateDeployments(t *testing.T) {
 						"templates.weave.works/shard-set": "test-shard-set",
 						"app.kubernetes.io/managed-by":    "flux-shard-controller",
 					}
-					d.ObjectMeta.Name = "shard-1-kustomization-controller"
+					d.ObjectMeta.Name = "shard-1-kustomize-controller"
 					d.Spec.Template.Spec.Containers[0].Args = []string{
 						"--watch-label-selector=sharding.fluxcd.io/key in (shard-1)",
 					}
@@ -127,6 +84,9 @@ func TestGenerateDeployments(t *testing.T) {
 		{
 			name: "generation when two shards is defined",
 			fluxShardSet: &shardv1.FluxShardSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-shard-set",
+				},
 				Spec: shardv1.FluxShardSetSpec{
 					Type: "kustomize",
 					Shards: []shardv1.ShardSpec{
@@ -150,7 +110,7 @@ func TestGenerateDeployments(t *testing.T) {
 						"templates.weave.works/shard-set": "test-shard-set",
 						"app.kubernetes.io/managed-by":    "flux-shard-controller",
 					}
-					d.ObjectMeta.Name = "shard-a-kustomization-controller"
+					d.ObjectMeta.Name = "shard-a-kustomize-controller"
 					d.Spec.Template.Spec.Containers[0].Args = []string{
 						"--watch-label-selector=sharding.fluxcd.io/key in (shard-a)",
 					}
@@ -160,7 +120,7 @@ func TestGenerateDeployments(t *testing.T) {
 						"templates.weave.works/shard-set": "test-shard-set",
 						"app.kubernetes.io/managed-by":    "flux-shard-controller",
 					}
-					d.ObjectMeta.Name = "shard-b-kustomization-controller"
+					d.ObjectMeta.Name = "shard-b-kustomize-controller"
 					d.Spec.Template.Spec.Containers[0].Args = []string{
 						"--watch-label-selector=sharding.fluxcd.io/key in (shard-b)",
 					}

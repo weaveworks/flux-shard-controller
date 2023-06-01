@@ -6,7 +6,6 @@ metadata:
     app.kubernetes.io/instance: flux-system
     app.kubernetes.io/part-of: flux
     app.kubernetes.io/version: v2.0.0-rc.1
-    app.kubernetes.io/managed-by: flux-shard-controller
     control-plane: controller
   name: kustomize-controller
   namespace: flux-system
