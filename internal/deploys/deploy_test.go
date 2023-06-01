@@ -127,6 +127,41 @@ func TestGenerateDeployments(t *testing.T) {
 				}),
 			},
 		},
+		{
+			name: "generation when the deployment has existing parameters",
+			fluxShardSet: &shardv1.FluxShardSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-shard-set",
+				},
+				Spec: shardv1.FluxShardSetSpec{
+					Type: "kustomize",
+					Shards: []shardv1.ShardSpec{
+						{
+							Name: "shard-1",
+						},
+					},
+				},
+			},
+			src: newTestDeployment(func(d *appsv1.Deployment) {
+				d.Spec.Template.Spec.Containers[0].Args = []string{
+					"--watch-all-namespaces=true",
+					"--watch-label-selector=!sharding.fluxcd.io/key",
+				}
+			}),
+			wantDeps: []*appsv1.Deployment{
+				newTestDeployment(func(d *appsv1.Deployment) {
+					d.ObjectMeta.Labels = map[string]string{
+						"templates.weave.works/shard-set": "test-shard-set",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+					}
+					d.ObjectMeta.Name = "shard-1-kustomize-controller"
+					d.Spec.Template.Spec.Containers[0].Args = []string{
+						"--watch-all-namespaces=true",
+						"--watch-label-selector=sharding.fluxcd.io/key in (shard-1)",
+					}
+				}),
+			},
+		},
 	}
 
 	for _, tt := range tests {

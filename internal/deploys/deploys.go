@@ -33,11 +33,22 @@ func newDeploymentFromDeployment(src appsv1.Deployment) *appsv1.Deployment {
 // updateNewDeployment updates the deployment with sharding related fields such as name and required labels
 func updateNewDeployment(depl *appsv1.Deployment, shardsetName string, shardName string) {
 	// Add sharding labels
-	depl.Labels = map[string]string{}
+	if depl.Labels == nil {
+		depl.Labels = map[string]string{}
+	}
 	depl.Labels["app.kubernetes.io/managed-by"] = "flux-shard-controller"
 	depl.ObjectMeta.Labels["templates.weave.works/shard-set"] = shardsetName
 	selectorArgs := fmt.Sprintf("--watch-label-selector=%s in (%s)", shardsSelector, shardName)
-	depl.Spec.Template.Spec.Containers[0].Args = []string{selectorArgs}
+	ignoreShardsSelectorArgs := fmt.Sprintf("--watch-label-selector=%s", ignoreShardsSelector)
+	for _, container := range depl.Spec.Template.Spec.Containers {
+		if container.Args == nil {
+			container.Args = []string{}
+		}
+		if container.Name == "manager" {
+			replaceArg(container.Args, ignoreShardsSelectorArgs, selectorArgs)
+		}
+
+	}
 
 	// Update deplyment name
 	depl.ObjectMeta.Name = fmt.Sprintf("%s-%s", shardName, depl.ObjectMeta.Name)
@@ -71,4 +82,14 @@ func deploymentIgnoresShardLabels(deploy *appsv1.Deployment) bool {
 	}
 
 	return false
+}
+
+func replaceArg(args []string, oldArg string, newArg string) []string {
+	for i := range args {
+		if args[i] == oldArg {
+			args[i] = newArg
+			return args
+		}
+	}
+	return args
 }
