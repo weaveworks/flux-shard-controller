@@ -31,20 +31,25 @@ func newDeploymentFromDeployment(src appsv1.Deployment) *appsv1.Deployment {
 }
 
 // updateNewDeployment updates the deployment with sharding related fields such as name and required labels
-func updateNewDeployment(depl *appsv1.Deployment, shardsetName string, shardName string) {
+func updateNewDeployment(depl *appsv1.Deployment, shardsetName string, shardName string) error {
 	// Add sharding labels
 	if depl.Labels == nil {
 		depl.Labels = map[string]string{}
 	}
 	depl.Labels["app.kubernetes.io/managed-by"] = "flux-shard-controller"
 	depl.ObjectMeta.Labels["templates.weave.works/shard-set"] = shardsetName
-	selectorArgs := fmt.Sprintf("--watch-label-selector=%s in (%s)", shardsSelector, shardName)
-	ignoreShardsSelectorArgs := fmt.Sprintf("--watch-label-selector=%s", ignoreShardsSelector)
+	// generate selector args string
+	selectorArgs, err := generateSelectorStr("--watch-label-selector", shardsSelector, metav1.LabelSelectorOpIn, []string{shardName})
+	if err != nil {
+		return err
+	}
+
 	for _, container := range depl.Spec.Template.Spec.Containers {
 		if container.Args == nil {
 			container.Args = []string{}
 		}
 		if container.Name == "manager" {
+			ignoreShardsSelectorArgs := fmt.Sprintf("--watch-label-selector=%s", ignoreShardsSelector)
 			replaceArg(container.Args, ignoreShardsSelectorArgs, selectorArgs)
 		}
 
@@ -52,6 +57,7 @@ func updateNewDeployment(depl *appsv1.Deployment, shardsetName string, shardName
 
 	// Update deplyment name
 	depl.ObjectMeta.Name = fmt.Sprintf("%s-%s", shardName, depl.ObjectMeta.Name)
+	return nil
 }
 
 // GenerateDeployments creates list of new deployments to process the set of
@@ -63,7 +69,10 @@ func GenerateDeployments(fluxShardSet *v1alpha1.FluxShardSet, src *appsv1.Deploy
 	generatedDeployments := []*appsv1.Deployment{}
 	for _, shard := range fluxShardSet.Spec.Shards {
 		deployment := newDeploymentFromDeployment(*src)
-		updateNewDeployment(deployment, fluxShardSet.Name, shard.Name)
+		err := updateNewDeployment(deployment, fluxShardSet.Name, shard.Name)
+		if err != nil {
+			return nil, err
+		}
 		generatedDeployments = append(generatedDeployments, deployment)
 	}
 
@@ -91,4 +100,23 @@ func replaceArg(args []string, oldArg string, newArg string) {
 			return
 		}
 	}
+}
+
+func generateSelectorStr(key, shardSelector string, operator metav1.LabelSelectorOperator, values []string) (string, error) {
+	selector := &metav1.LabelSelector{
+		MatchExpressions: []metav1.LabelSelectorRequirement{
+			{
+				Key:      shardSelector,
+				Operator: operator,
+				Values:   values,
+			},
+		},
+	}
+
+	labelSelector, err := metav1.LabelSelectorAsSelector(selector)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate label selector: %v", err)
+	}
+
+	return fmt.Sprintf("%s=%s", key, labelSelector), nil
 }
