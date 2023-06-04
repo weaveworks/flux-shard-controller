@@ -70,6 +70,7 @@ func TestGenerateDeployments(t *testing.T) {
 			}),
 			wantDeps: []*appsv1.Deployment{
 				newTestDeployment(func(d *appsv1.Deployment) {
+					d.Annotations = map[string]string{}
 					d.ObjectMeta.Labels = map[string]string{
 						"templates.weave.works/shard-set": "test-shard-set",
 						"app.kubernetes.io/managed-by":    "flux-shard-controller",
@@ -106,6 +107,7 @@ func TestGenerateDeployments(t *testing.T) {
 			}),
 			wantDeps: []*appsv1.Deployment{
 				newTestDeployment(func(d *appsv1.Deployment) {
+					d.Annotations = map[string]string{}
 					d.ObjectMeta.Labels = map[string]string{
 						"templates.weave.works/shard-set": "test-shard-set",
 						"app.kubernetes.io/managed-by":    "flux-shard-controller",
@@ -116,6 +118,7 @@ func TestGenerateDeployments(t *testing.T) {
 					}
 				}),
 				newTestDeployment(func(d *appsv1.Deployment) {
+					d.Annotations = map[string]string{}
 					d.ObjectMeta.Labels = map[string]string{
 						"templates.weave.works/shard-set": "test-shard-set",
 						"app.kubernetes.io/managed-by":    "flux-shard-controller",
@@ -150,6 +153,7 @@ func TestGenerateDeployments(t *testing.T) {
 			}),
 			wantDeps: []*appsv1.Deployment{
 				newTestDeployment(func(d *appsv1.Deployment) {
+					d.Annotations = map[string]string{}
 					d.ObjectMeta.Labels = map[string]string{
 						"templates.weave.works/shard-set": "test-shard-set",
 						"app.kubernetes.io/managed-by":    "flux-shard-controller",
@@ -179,16 +183,13 @@ func TestGenerateDeployments(t *testing.T) {
 }
 
 func TestGenerateDeployments_errors(t *testing.T) {
+	// TODO Figure out what it means to be a flux controller and test for this
 	tests := []struct {
 		name         string
 		fluxShardSet *shardv1.FluxShardSet
 		src          *appsv1.Deployment
 		wantErr      string
 	}{
-		// {
-		// 	// Not sure how to do this
-		// 	name: "deployment is not a Flux controller",
-		// },
 		{
 			// The deployment does not have --watch-label-selector=
 			name:    "deployment does not have sharding args",

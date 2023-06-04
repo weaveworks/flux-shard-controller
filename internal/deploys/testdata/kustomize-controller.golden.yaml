@@ -7,8 +7,9 @@ metadata:
     app.kubernetes.io/part-of: flux
     app.kubernetes.io/version: v2.0.0-rc.1
     control-plane: controller
-  name: kustomize-controller
+  name: ""
   namespace: flux-system
+  annotations: {}
 spec:
   progressDeadlineSeconds: 600
   replicas: 1

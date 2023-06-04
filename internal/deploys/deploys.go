@@ -2,6 +2,7 @@ package deploys
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/weaveworks/flux-shard-controller/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -20,8 +21,9 @@ func newDeploymentFromDeployment(src appsv1.Deployment) *appsv1.Deployment {
 	if len(depl.Annotations) > 1 {
 		delete(depl.Annotations, "deployment.kubernetes.io/revision")
 	} else {
-		depl.Annotations = nil
+		depl.Annotations = map[string]string{}
 	}
+	depl.ObjectMeta.Name = ""
 	depl.Generation = 0
 	depl.ResourceVersion = ""
 	depl.UID = ""
@@ -31,12 +33,12 @@ func newDeploymentFromDeployment(src appsv1.Deployment) *appsv1.Deployment {
 }
 
 // updateNewDeployment updates the deployment with sharding related fields such as name and required labels
-func updateNewDeployment(depl *appsv1.Deployment, shardsetName string, shardName string) error {
+func updateNewDeployment(depl *appsv1.Deployment, shardsetName, shardName, newDeploymentName string) error {
 	// Add sharding labels
-	if depl.Labels == nil {
-		depl.Labels = map[string]string{}
+	if depl.ObjectMeta.Labels == nil {
+		depl.ObjectMeta.Labels = map[string]string{}
 	}
-	depl.Labels["app.kubernetes.io/managed-by"] = "flux-shard-controller"
+	depl.ObjectMeta.Labels["app.kubernetes.io/managed-by"] = "flux-shard-controller"
 	depl.ObjectMeta.Labels["templates.weave.works/shard-set"] = shardsetName
 	// generate selector args string
 	selectorArgs, err := generateSelectorStr("--watch-label-selector", shardsSelector, metav1.LabelSelectorOpIn, []string{shardName})
@@ -56,7 +58,7 @@ func updateNewDeployment(depl *appsv1.Deployment, shardsetName string, shardName
 	}
 
 	// Update deplyment name
-	depl.ObjectMeta.Name = fmt.Sprintf("%s-%s", shardName, depl.ObjectMeta.Name)
+	depl.ObjectMeta.Name = newDeploymentName
 	return nil
 }
 
@@ -69,7 +71,8 @@ func GenerateDeployments(fluxShardSet *v1alpha1.FluxShardSet, src *appsv1.Deploy
 	generatedDeployments := []*appsv1.Deployment{}
 	for _, shard := range fluxShardSet.Spec.Shards {
 		deployment := newDeploymentFromDeployment(*src)
-		err := updateNewDeployment(deployment, fluxShardSet.Name, shard.Name)
+		newDeploymentName := fmt.Sprintf("%s-%s", shard.Name, src.ObjectMeta.Name)
+		err := updateNewDeployment(deployment, fluxShardSet.Name, shard.Name, newDeploymentName)
 		if err != nil {
 			return nil, err
 		}
@@ -93,11 +96,10 @@ func deploymentIgnoresShardLabels(deploy *appsv1.Deployment) bool {
 	return false
 }
 
-func replaceArg(args []string, oldArg string, newArg string) {
+func replaceArg(args []string, ignoreShardsSelectorArgs string, newArg string) {
 	for i := range args {
-		if args[i] == oldArg {
+		if strings.HasPrefix(args[i], ignoreShardsSelectorArgs) {
 			args[i] = newArg
-			return
 		}
 	}
 }
