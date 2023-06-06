@@ -4,6 +4,8 @@ go 1.19
 
 require (
 	github.com/fluxcd/pkg/apis/meta v1.1.0
+	github.com/gitops-tools/pkg v0.1.0
+	github.com/go-logr/logr v1.2.3
 	github.com/google/go-cmp v0.5.9
 	github.com/onsi/ginkgo/v2 v2.9.1
 	github.com/onsi/gomega v1.27.4
@@ -25,7 +27,6 @@ require (
 	github.com/evanphx/json-patch/v5 v5.6.0 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
 	github.com/go-errors/errors v1.0.1 // indirect
-	github.com/go-logr/logr v1.2.3 // indirect
 	github.com/go-logr/zapr v1.2.3 // indirect
 	github.com/go-openapi/jsonpointer v0.19.6 // indirect
 	github.com/go-openapi/jsonreference v0.20.1 // indirect
@@ -83,3 +84,6 @@ require (
 	sigs.k8s.io/kustomize/kyaml v0.13.9 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.2.3 // indirect
 )
+
+// replace internal/deploys import with local internal/deploys import
+replace github.com/weaveworks/flux-shard-controller/internals/deploys => ./home/rana/Desktop/workspace/weaveworks/flux-shard-controller/internal/deploys

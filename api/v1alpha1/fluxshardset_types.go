@@ -17,11 +17,20 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"time"
+
+	"github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+
+var NoRequeueInterval time.Duration
+
+// DefaultInterval is used when Interval is not specified, it
+// is the default time to wait before the next reconcile loop.
+const DefaultRequeueAfterSeconds = 3 * time.Minute
 
 // FluxShardSetSpec defines the desired state of FluxShardSet
 type FluxShardSetSpec struct {
@@ -48,6 +57,21 @@ type ShardSpec struct {
 type FluxShardSetStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+	meta.ReconcileRequestStatus `json:",inline"`
+
+	// ObservedGeneration is the last observed generation of the HelmRepository
+	// object.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Conditions holds the conditions for the GitOpsSet
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Inventory contains the list of Kubernetes resource object references that
+	// have been successfully applied
+	// +optional
+	Inventory *ResourceInventory `json:"inventory,omitempty"`
 }
 
 //+kubebuilder:object:root=true
