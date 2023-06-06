@@ -8,6 +8,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/created-by: flux-shard-controller
   name: fluxshardset-sample
+  namespace: flux-system
 spec:
   sourceDeploymentRef:
     name: kustomize-controller

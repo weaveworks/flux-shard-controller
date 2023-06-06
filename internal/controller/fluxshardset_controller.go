@@ -20,13 +20,16 @@ import (
 	"context"
 	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/cli-utils/pkg/object"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	fluxMeta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/gitops-tools/pkg/sets"
@@ -39,6 +42,8 @@ import (
 
 var accessor = meta.NewAccessor()
 
+const deploymentIndexKey string = ".metadata.reference.Deployment"
+
 // FluxShardSetReconciler reconciles a FluxShardSet object
 type FluxShardSetReconciler struct {
 	client.Client
@@ -47,6 +52,8 @@ type FluxShardSetReconciler struct {
 
 // +kubebuilder:rbac:groups=templates.weave.works,resources=fluxshardsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=templates.weave.works,resources=fluxshardsets/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 // For more details, check Reconcile and its Result here:
@@ -71,7 +78,6 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	inventory, err := r.reconcileResources(ctx, &shardSet)
-
 	if err != nil {
 		templatesv1.SetFluxShardSetReadiness(&shardSet, metav1.ConditionFalse, templatesv1.ReconciliationFailedReason, err.Error())
 		if err := r.patchStatus(ctx, req, shardSet.Status); err != nil {
@@ -85,7 +91,7 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		templatesv1.SetReadyWithInventory(&shardSet, inventory, templatesv1.ReconciliationSucceededReason,
 			fmt.Sprintf("%d shard(s) created", len(inventory.Entries)))
 
-		if err := r.patchStatus(ctx, req, shardSet.Status); err != nil {
+		if err := r.patchStatus(ctx, req, shardSet.Status); client.IgnoreNotFound(err) != nil {
 			templatesv1.SetFluxShardSetReadiness(&shardSet, metav1.ConditionFalse, templatesv1.ReconciliationFailedReason, err.Error())
 			logger.Error(err, "failed to reconcile")
 			return ctrl.Result{}, fmt.Errorf("failed to update status and inventory: %w", err)
@@ -115,8 +121,17 @@ func (r *FluxShardSetReconciler) removeResourceRefs(ctx context.Context, deletio
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *FluxShardSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetCache().IndexField(
+		context.TODO(), &templatesv1.FluxShardSet{}, deploymentIndexKey, indexDeployments); err != nil {
+		return fmt.Errorf("failed setting index fields: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&templatesv1.FluxShardSet{}).
+		Watches(
+			&appsv1.Deployment{},
+			handler.EnqueueRequestsFromMapFunc(r.deploymentsToFluxShardSet),
+		).
 		Complete(r)
 }
 
@@ -125,7 +140,7 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, fluxSha
 
 	srcDeploy, err := r.getSourceDeployment(ctx, fluxShardSet)
 	if err != nil {
-		return nil, err
+		return nil, client.IgnoreNotFound(err)
 	}
 
 	generatedDeployments, err := deploys.GenerateDeployments(fluxShardSet, srcDeploy)
@@ -149,8 +164,24 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, fluxSha
 
 		if existingInventory.Has(ref) {
 			newInventory.Insert(ref)
-			// TODO if existing entries has ref, update it
-			continue
+			existing := &appsv1.Deployment{}
+			err = r.Client.Get(ctx, client.ObjectKeyFromObject(newDeployment), existing)
+			if err == nil {
+				newDeployment = copyDeploymentContent(existing, newDeployment)
+				if err := r.Client.Patch(ctx, newDeployment, client.MergeFrom(existing)); err != nil {
+					return nil, fmt.Errorf("failed to update Deployment: %w", err)
+				}
+
+				if err := logResourceMessage(logger, "updated deployment", newDeployment); err != nil {
+					return nil, err
+				}
+				continue
+			}
+
+			if !apierrors.IsNotFound(err) {
+				return nil, fmt.Errorf("failed to load existing Deployment: %w", err)
+			}
+
 		}
 
 		if err := controllerutil.SetOwnerReference(fluxShardSet, newDeployment, r.Scheme); err != nil {
@@ -187,11 +218,11 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, fluxSha
 func (r *FluxShardSetReconciler) getSourceDeployment(ctx context.Context, fluxShardSet *templatesv1.FluxShardSet) (*appsv1.Deployment, error) {
 	srcDeployKey := client.ObjectKey{
 		Name:      fluxShardSet.Spec.SourceDeploymentRef.Name,
-		Namespace: fluxShardSet.Spec.SourceDeploymentRef.Namespace,
+		Namespace: fluxShardSet.GetNamespace(),
 	}
 	srcDeploy := &appsv1.Deployment{}
 	if err := r.Client.Get(ctx, srcDeployKey, srcDeploy); err != nil {
-		return nil, fmt.Errorf("failed to load source deployment: %w", err)
+		return nil, err
 	}
 
 	return srcDeploy, nil
@@ -207,6 +238,22 @@ func (r *FluxShardSetReconciler) patchStatus(ctx context.Context, req ctrl.Reque
 	set.Status = newStatus
 
 	return r.Status().Patch(ctx, &set, patch)
+}
+
+func (r *FluxShardSetReconciler) deploymentsToFluxShardSet(ctx context.Context, obj client.Object) []ctrl.Request {
+	var list templatesv1.FluxShardSetList
+	if err := r.Client.List(ctx, &list,
+		client.MatchingFields{deploymentIndexKey: client.ObjectKeyFromObject(obj).String()},
+		client.InNamespace(obj.GetNamespace())); err != nil {
+		return nil
+	}
+
+	result := []reconcile.Request{}
+	for i := range list.Items {
+		result = append(result, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(&list.Items[i])})
+	}
+
+	return result
 }
 
 func deploymentFromResourceRef(ref templatesv1.ResourceRef) (*appsv1.Deployment, error) {
@@ -239,4 +286,24 @@ func logResourceMessage(logger logr.Logger, msg string, obj runtime.Object) erro
 	logger.Info(msg, "objNamespace", namespace, "objName", name, "kind", kind)
 
 	return nil
+}
+
+func copyDeploymentContent(existing, newValue *appsv1.Deployment) *appsv1.Deployment {
+	result := &appsv1.Deployment{}
+	existing.DeepCopyInto(result)
+
+	result.Spec = newValue.Spec
+	result.SetAnnotations(newValue.GetAnnotations())
+	result.SetLabels(newValue.GetLabels())
+
+	return result
+}
+
+func indexDeployments(o client.Object) []string {
+	fss, ok := o.(*templatesv1.FluxShardSet)
+	if !ok {
+		panic(fmt.Sprintf("Expected a FluxShardSet, got %T", o))
+	}
+
+	return []string{fmt.Sprintf("%s/%s", fss.GetNamespace(), fss.Spec.SourceDeploymentRef.Name)}
 }

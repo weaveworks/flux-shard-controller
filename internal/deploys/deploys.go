@@ -10,19 +10,29 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const ignoreShardsSelector = "!sharding.fluxcd.io/key"
-const shardsSelector = "sharding.fluxcd.io/key"
+const (
+	ignoreShardsSelector    = "!sharding.fluxcd.io/key"
+	ignoreShardsSelectorArg = "--watch-label-selector=" + ignoreShardsSelector
+	shardsSelector          = "sharding.fluxcd.io/key"
+)
 
 // newDeploymentFromDeployment takes a Deployment loaded from the Cluster and
 // clears out the Metadata fields that are needed in the cluster.
 func newDeploymentFromDeployment(src appsv1.Deployment) *appsv1.Deployment {
 	depl := src.DeepCopy()
 	depl.CreationTimestamp = metav1.Time{}
-	if len(depl.Annotations) > 1 {
-		delete(depl.Annotations, "deployment.kubernetes.io/revision")
-	} else {
+	if depl.Annotations == nil {
 		depl.Annotations = map[string]string{}
 	}
+
+	// This is really a work around for the test cases
+	// But it doesn't cost anything to do it here.
+	// https://github.com/kubernetes-sigs/controller-runtime/issues?q=is%3Aissue+typemeta+empty+is%3Aclosed+
+	depl.TypeMeta = metav1.TypeMeta{
+		Kind:       "Deployment",
+		APIVersion: "apps/v1",
+	}
+	delete(depl.Annotations, "deployment.kubernetes.io/revision")
 	depl.ObjectMeta.Name = ""
 	depl.Generation = 0
 	depl.ResourceVersion = ""
@@ -33,13 +43,23 @@ func newDeploymentFromDeployment(src appsv1.Deployment) *appsv1.Deployment {
 }
 
 // updateNewDeployment updates the deployment with sharding related fields such as name and required labels
-func updateNewDeployment(depl *appsv1.Deployment, shardsetName, shardName, newDeploymentName string) error {
+func updateNewDeployment(depl *appsv1.Deployment, shardSetName, shardName, newDeploymentName string) error {
 	// Add sharding labels
 	if depl.ObjectMeta.Labels == nil {
 		depl.ObjectMeta.Labels = map[string]string{}
 	}
-	depl.ObjectMeta.Labels["app.kubernetes.io/managed-by"] = "flux-shard-controller"
-	depl.ObjectMeta.Labels["templates.weave.works/shard-set"] = shardsetName
+
+	shardLabels := map[string]string{
+		"app.kubernetes.io/managed-by":    "flux-shard-controller",
+		"templates.weave.works/shard-set": shardSetName,
+		"templates.weave.works/shard":     shardName,
+		"sharding.fluxcd.io/role":         "shard",
+	}
+
+	depl.ObjectMeta.Labels = merge(
+		shardLabels,
+		depl.ObjectMeta.Labels,
+	)
 	// generate selector args string
 	selectorArgs, err := generateSelectorStr("--watch-label-selector", shardsSelector, metav1.LabelSelectorOpIn, []string{shardName})
 	if err != nil {
@@ -51,15 +71,40 @@ func updateNewDeployment(depl *appsv1.Deployment, shardsetName, shardName, newDe
 			container.Args = []string{}
 		}
 		if container.Name == "manager" {
-			ignoreShardsSelectorArgs := fmt.Sprintf("--watch-label-selector=%s", ignoreShardsSelector)
-			replaceArg(container.Args, ignoreShardsSelectorArgs, selectorArgs)
+			replaceArg(container.Args, ignoreShardsSelectorArg, selectorArgs)
 		}
 
 	}
 
-	// Update deplyment name
+	// Update deployment name
 	depl.ObjectMeta.Name = newDeploymentName
+
+	// This makes the selector and template labels match.
+	depl.Spec.Selector.MatchLabels = merge(
+		shardLabels,
+		depl.Spec.Selector.MatchLabels,
+	)
+
+	depl.Spec.Template.ObjectMeta.Labels = merge(
+		shardLabels,
+		depl.Spec.Template.ObjectMeta.Labels,
+	)
+
 	return nil
+}
+
+// return a copy off the "dest" map, with the elements of the "src" map applied
+// over the top.
+func merge[K comparable, V any](src, dest map[K]V) map[K]V {
+	merged := map[K]V{}
+	for k, v := range dest {
+		merged[k] = v
+	}
+	for k, v := range src {
+		merged[k] = v
+	}
+
+	return merged
 }
 
 // GenerateDeployments creates list of new deployments to process the set of
@@ -71,11 +116,12 @@ func GenerateDeployments(fluxShardSet *v1alpha1.FluxShardSet, src *appsv1.Deploy
 	generatedDeployments := []*appsv1.Deployment{}
 	for _, shard := range fluxShardSet.Spec.Shards {
 		deployment := newDeploymentFromDeployment(*src)
-		newDeploymentName := fmt.Sprintf("%s-%s", shard.Name, src.ObjectMeta.Name)
+		newDeploymentName := fmt.Sprintf("%s-%s", src.ObjectMeta.Name, shard.Name)
 		err := updateNewDeployment(deployment, fluxShardSet.Name, shard.Name, newDeploymentName)
 		if err != nil {
 			return nil, err
 		}
+
 		generatedDeployments = append(generatedDeployments, deployment)
 	}
 
@@ -83,11 +129,10 @@ func GenerateDeployments(fluxShardSet *v1alpha1.FluxShardSet, src *appsv1.Deploy
 }
 
 func deploymentIgnoresShardLabels(deploy *appsv1.Deployment) bool {
-	wantArg := fmt.Sprintf("--watch-label-selector=%s", ignoreShardsSelector)
 	for i := range deploy.Spec.Template.Spec.Containers {
 		container := deploy.Spec.Template.Spec.Containers[i]
 		for _, arg := range container.Args {
-			if arg == wantArg {
+			if arg == ignoreShardsSelectorArg {
 				return true
 			}
 		}

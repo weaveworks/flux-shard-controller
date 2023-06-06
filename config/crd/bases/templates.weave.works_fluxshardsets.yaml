@@ -60,9 +60,6 @@ spec:
                   name:
                     description: Name of the referent.
                     type: string
-                  namespace:
-                    description: Namespace of the referent.
-                    type: string
                 required:
                 - name
                 type: object
