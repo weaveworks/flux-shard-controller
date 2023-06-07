@@ -46,6 +46,10 @@ spec:
                       type: string
                   type: object
                 type: array
+              suspend:
+                description: Suspend tells the controller to suspend the reconciliation
+                  of this FluxShardSet.
+                type: boolean
               type:
                 description: 'Type is the type of the deployment, e.g. kustomization,
                   helm, source, notification TODO: make this an enum TODO: make this

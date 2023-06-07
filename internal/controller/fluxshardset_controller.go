@@ -70,6 +70,12 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		"shards", shardSet.Spec.Shards,
 	)
 
+	// Skip reconciliation if the GitOpsSet is suspended.
+	if shardSet.Spec.Suspend {
+		logger.Info("Reconciliation is suspended for this GitOpsSet")
+		return ctrl.Result{}, nil
+	}
+
 	k8sClient := r.Client
 
 	// Set the value of the reconciliation request in status.

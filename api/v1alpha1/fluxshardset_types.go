@@ -37,6 +37,11 @@ type FluxShardSetSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
+	// Suspend tells the controller to suspend the reconciliation of this
+	// FluxShardSet.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
+
 	// Type is the type of the deployment, e.g. kustomization, helm, source, notification
 	// TODO: make this an enum
 	// TODO: make this required
