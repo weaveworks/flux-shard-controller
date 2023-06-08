@@ -84,6 +84,3 @@ require (
 	sigs.k8s.io/kustomize/kyaml v0.13.9 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.2.3 // indirect
 )
-
-// replace internal/deploys import with local internal/deploys import
-replace github.com/weaveworks/flux-shard-controller/internals/deploys => ./home/rana/Desktop/workspace/weaveworks/flux-shard-controller/internal/deploys
