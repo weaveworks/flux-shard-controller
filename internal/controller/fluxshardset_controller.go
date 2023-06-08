@@ -23,17 +23,20 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/cli-utils/pkg/object"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	fluxMeta "github.com/fluxcd/pkg/apis/meta"
 	"github.com/gitops-tools/pkg/sets"
+	"github.com/go-logr/logr"
 	templatesv1 "github.com/weaveworks/flux-shard-controller/api/v1alpha1"
 	deploys "github.com/weaveworks/flux-shard-controller/internal/deploys"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	// deploys "github.com/weaveworks/flux-shard-controller/internals/deploys"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 var accessor = meta.NewAccessor()
@@ -78,6 +81,10 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	k8sClient := r.Client
 
+	if !shardSet.ObjectMeta.DeletionTimestamp.IsZero() {
+		return r.finalize(ctx, &shardSet, k8sClient)
+	}
+
 	// Set the value of the reconciliation request in status.
 	if v, ok := fluxMeta.ReconcileAnnotationValue(shardSet.GetAnnotations()); ok {
 		shardSet.Status.LastHandledReconcileAt = v
@@ -108,6 +115,46 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// return ctrl.Result{RequeueAfter: requeue}, nil
 	return ctrl.Result{}, nil
+}
+
+func (r *FluxShardSetReconciler) finalize(ctx context.Context, shardset *templatesv1.FluxShardSet, k8sClient client.Client) (ctrl.Result, error) {
+	logger := ctrl.LoggerFrom(ctx)
+	logger.Info("finalizing resources")
+
+	if !shardset.Spec.Suspend &&
+		shardset.Status.Inventory != nil &&
+		shardset.Status.Inventory.Entries != nil {
+
+		if err := r.removeResourceRefs(ctx, k8sClient, shardset.Status.Inventory.Entries); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		logger.Info("cleaned resources")
+	}
+
+	logger.Info("removing the finalizer")
+	// Remove our finalizer from the list and update it
+	controllerutil.RemoveFinalizer(shardset, templatesv1.FluxShardSetFinalizer)
+	return ctrl.Result{}, r.Update(ctx, shardset)
+}
+
+func (r *FluxShardSetReconciler) removeResourceRefs(ctx context.Context, k8sClient client.Client, deletions []templatesv1.ResourceRef) error {
+	logger := log.FromContext(ctx)
+	for _, v := range deletions {
+		u, err := unstructuredFromResourceRef(v)
+		if err != nil {
+			return err
+		}
+		if err := logResourceMessage(logger, "deleting resource", u); err != nil {
+			return err
+		}
+
+		if err := k8sClient.Delete(ctx, u); err != nil {
+			return fmt.Errorf("failed to delete %v: %w", u, err)
+		}
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -203,10 +250,10 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, k8sClie
 
 	}
 	// TODO if existingEntries has more Deployments not in generated Deployments, remove them from inventory
-	// objectsToRemove := existingEntries.Difference(entries)
-	// if err := r.removeResourceRefs(ctx, k8sClient, objectsToRemove.List()); err != nil {
-	// 	return nil, err
-	// }
+	objectsToRemove := existingEntries.Difference(entries)
+	if err := r.removeResourceRefs(ctx, k8sClient, objectsToRemove.List()); err != nil {
+		return nil, templatesv1.NoRequeueInterval, err
+	}
 	// TODO calculateInterval
 	// requeueAfter, err := calculateInterval(fluxShardSet, generatedDeployments)
 	// if err != nil {
@@ -233,19 +280,18 @@ func (r *FluxShardSetReconciler) patchStatus(ctx context.Context, req ctrl.Reque
 	return r.Status().Patch(ctx, &set, patch)
 }
 
-// func unstructuredFromResourceRef(ref templatesv1.ResourceRef) (*unstructured.Unstructured, error) {
-// 	// TODO update function
-// 	objMeta, err := object.ParseObjMetadata(ref.ID)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("failed to parse object ID %s: %w", ref.ID, err)
-// 	}
-// 	u := unstructured.Unstructured{}
-// 	u.SetGroupVersionKind(objMeta.GroupKind.WithVersion(ref.Version))
-// 	u.SetName(objMeta.Name)
-// 	u.SetNamespace(objMeta.Namespace)
+func unstructuredFromResourceRef(ref templatesv1.ResourceRef) (*unstructured.Unstructured, error) {
+	objMeta, err := object.ParseObjMetadata(ref.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse object ID %s: %w", ref.ID, err)
+	}
+	u := unstructured.Unstructured{}
+	u.SetGroupVersionKind(objMeta.GroupKind.WithVersion(ref.Version))
+	u.SetName(objMeta.Name)
+	u.SetNamespace(objMeta.Namespace)
 
-// 	return &u, nil
-// }
+	return &u, nil
+}
 
 // func copyUnstructuredContent(existing, newValue *unstructured.Unstructured) *unstructured.Unstructured {
 // 	// TODO update function
@@ -266,21 +312,22 @@ func (r *FluxShardSetReconciler) patchStatus(ctx context.Context, req ctrl.Reque
 // 	return &result
 // }
 
-// func logResourceMessage(logger logr.Logger, msg string, obj runtime.Object) error {
-// 	namespace, err := accessor.Namespace(obj)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	name, err := accessor.Name(obj)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	kind, err := accessor.Kind(obj)
-// 	if err != nil {
-// 		return err
-// 	}
+func logResourceMessage(logger logr.Logger, msg string, obj runtime.Object) error {
+	// TODO enhance
+	namespace, err := accessor.Namespace(obj)
+	if err != nil {
+		return err
+	}
+	name, err := accessor.Name(obj)
+	if err != nil {
+		return err
+	}
+	kind, err := accessor.Kind(obj)
+	if err != nil {
+		return err
+	}
 
-// 	logger.Info(msg, "objNamespace", namespace, "objName", name, "kind", kind)
+	logger.Info(msg, "objNamespace", namespace, "objName", name, "kind", kind)
 
-// 	return nil
-// }
+	return nil
+}

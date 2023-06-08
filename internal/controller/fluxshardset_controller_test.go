@@ -10,6 +10,7 @@ import (
 	"github.com/fluxcd/pkg/apis/meta"
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -81,6 +82,7 @@ func TestReconciliation(t *testing.T) {
 			})
 
 		}))
+		defer deleteFluxShardSetAndFinalize(t, k8sClient, reconciler, shardset)
 
 		srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
 			d.Annotations = map[string]string{}
@@ -127,6 +129,50 @@ func TestReconciliation(t *testing.T) {
 		assertDeploymentsExist(t, k8sClient, "default", "shard-1-kustomize-controller")
 	})
 
+	t.Run("Delete resources when removing shard from fluxshardset shards", func(t *testing.T) {
+		ctx := context.TODO()
+		// Create shard set and src deployment
+		shardset := createAndReconcileToFinalizedState(t, k8sClient, reconciler, makeTestFluxShardSet(t, func(shardset *templatesv1.FluxShardSet) {
+			shardset.Name = "test-shard-set-2"
+			shardset.Spec.Type = "kustomize"
+			shardset.Spec.Shards = []templatesv1.ShardSpec{
+				{
+					Name: "shard-1",
+				},
+				{
+					Name: "shard-2",
+				},
+			}
+
+		}))
+		defer deleteFluxShardSetAndFinalize(t, k8sClient, reconciler, shardset)
+
+		srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
+			d.Annotations = map[string]string{}
+			d.ObjectMeta.Name = "kustomize-controller"
+			d.Spec.Template.Spec.Containers[0].Args = []string{
+				"--watch-label-selector=!sharding.fluxcd.io/key",
+			}
+		})
+		reconciler.Create(ctx, srcDeployment)
+
+		// Reconcile
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(shardset)})
+		test.AssertNoError(t, err)
+
+		// Check fluxshardset
+		updated := &templatesv1.FluxShardSet{}
+		test.AssertNoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(shardset), updated))
+		assertDeploymentsExist(t, k8sClient, "default", "shard-1-kustomize-controller", "shard-2-kustomize-controller")
+
+		// Update shard set by removing shard-2
+		shardset.Spec.Shards = shardset.Spec.Shards[:1]
+		reconcileAndAssertFinalizerExists(t, k8sClient, reconciler, shardset)
+		// Check deployment for shard-1 exists and deployment for shard-2 is deleted
+		assertDeploymentsExist(t, k8sClient, "default", "shard-1-kustomize-controller")
+		assertDeploymentsDontExist(t, k8sClient, "default", "shard-2-kustomize-controller")
+	})
+
 }
 
 func assertDeploymentsExist(t *testing.T, cl client.Client, ns string, want ...string) {
@@ -146,7 +192,29 @@ func assertDeploymentsExist(t *testing.T, cl client.Client, ns string, want ...s
 
 	sort.Strings(want)
 	if diff := cmp.Diff(want, existingNames); len(diff) < 0 {
-		t.Fatalf("got different names:\n%s , %s", diff, existingNames[0])
+		t.Fatalf("got different names:\n%s", diff)
+	}
+}
+
+func assertDeploymentsDontExist(t *testing.T, cl client.Client, ns string, deps ...string) {
+	t.Helper()
+	d := &unstructured.UnstructuredList{}
+	d.SetGroupVersionKind(DeploymentGVK)
+	test.AssertNoError(t, cl.List(context.TODO(), d, client.InNamespace(ns)))
+
+	existingNames := func(l []unstructured.Unstructured) []string {
+		names := []string{}
+		for _, v := range l {
+			names = append(names, v.GetName())
+		}
+		sort.Strings(names)
+		return names
+	}(d.Items)
+
+	sort.Strings(deps)
+	if diff := cmp.Diff(deps, existingNames); len(diff) < 0 {
+
+		t.Fatalf("Found deployments that shouldn't be found:\n%s", diff)
 	}
 }
 
@@ -213,6 +281,25 @@ func makeTestFluxShardSet(t *testing.T, opts ...func(*templatesv1.FluxShardSet))
 	}
 
 	return fluxshardset
+}
+
+func deleteFluxShardSetAndFinalize(t *testing.T, cl client.Client, reconciler *FluxShardSetReconciler, shardset *templatesv1.FluxShardSet) {
+	t.Helper()
+	ctx := context.TODO()
+	if shardset.Spec.Suspend {
+		shardset.Spec.Suspend = false
+		test.AssertNoError(t, cl.Update(ctx, shardset))
+	}
+
+	test.AssertNoError(t, cl.Delete(ctx, shardset))
+
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(shardset)})
+	test.AssertNoError(t, err)
+
+	if !apierrors.IsNotFound(cl.Get(ctx, client.ObjectKeyFromObject(shardset), shardset)) {
+		t.Fatalf("failed to finalize: %s", err)
+	}
+	test.AssertNoError(t, client.IgnoreNotFound(cl.Get(ctx, client.ObjectKeyFromObject(shardset), shardset)))
 }
 
 func mustMarshalJSON(t *testing.T, r runtime.Object) []byte {

@@ -32,6 +32,8 @@ var NoRequeueInterval time.Duration
 // is the default time to wait before the next reconcile loop.
 const DefaultRequeueAfterSeconds = 3 * time.Minute
 
+const FluxShardSetFinalizer = "finalizers.templates.weave.works"
+
 // FluxShardSetSpec defines the desired state of FluxShardSet
 type FluxShardSetSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
