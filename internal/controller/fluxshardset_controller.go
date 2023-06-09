@@ -36,7 +36,6 @@ import (
 	deploys "github.com/weaveworks/flux-shard-controller/internal/deploys"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 var accessor = meta.NewAccessor()
@@ -73,9 +72,17 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		"shards", shardSet.Spec.Shards,
 	)
 
-	// Skip reconciliation if the GitOpsSet is suspended.
+	// Add finalizer first if it doesn't exist to avoid the race condition
+	// between init and delete.
+	if !controllerutil.ContainsFinalizer(&shardSet, templatesv1.FluxShardSetFinalizer) {
+		controllerutil.AddFinalizer(&shardSet, templatesv1.FluxShardSetFinalizer)
+
+		return ctrl.Result{Requeue: true}, r.Update(ctx, &shardSet)
+	}
+
+	// Skip reconciliation if the FluxShardSet is suspended.
 	if shardSet.Spec.Suspend {
-		logger.Info("Reconciliation is suspended for this GitOpsSet")
+		logger.Info("Reconciliation is suspended for this FluxShardSet")
 		return ctrl.Result{}, nil
 	}
 
@@ -141,16 +148,15 @@ func (r *FluxShardSetReconciler) finalize(ctx context.Context, shardset *templat
 func (r *FluxShardSetReconciler) removeResourceRefs(ctx context.Context, k8sClient client.Client, deletions []templatesv1.ResourceRef) error {
 	logger := log.FromContext(ctx)
 	for _, v := range deletions {
-		u, err := unstructuredFromResourceRef(v)
+		d, err := deploymentFromResourceRef(v)
 		if err != nil {
 			return err
 		}
-		if err := logResourceMessage(logger, "deleting resource", u); err != nil {
+		if err := logResourceMessage(logger, "deleting resource", d); err != nil {
 			return err
 		}
-
-		if err := k8sClient.Delete(ctx, u); err != nil {
-			return fmt.Errorf("failed to delete %v: %w", u, err)
+		if err := k8sClient.Delete(ctx, d); err != nil {
+			return fmt.Errorf("failed to delete %v: %w", d, err)
 		}
 	}
 
@@ -209,32 +215,17 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, k8sClie
 		// TODO if existing entries has ref, update it
 		if existingEntries.Has(ref) {
 			continue
-			// existing, err := unstructuredFromResourceRef(ref)
-			// if err != nil {
-			// 	// TODO templatesv1.NoRequeueInterval
-			// 	return nil, templatesv1.NoRequeueInterval, fmt.Errorf("failed to convert resource for update: %w", err)
-			// }
-			// err = k8sClient.Get(ctx, client.ObjectKeyFromObject(&newDeployment), existing)
-			// if err == nil {
-			// 	// TODO update existing
-			// 	newDeployment = copyUnstructuredContent(existing, newDeployment)
-			// 	if err := k8sClient.Patch(ctx, &newDeployment, client.MergeFrom(existing)); err != nil {
-			// 		// TODO templatesv1.NoRequeueInterval
-			// 		return nil, templatesv1.NoRequeueInterval, fmt.Errorf("failed to update Resource: %w", err)
-			// 	}
-			// 	continue
-			// }
 
-			// if !apierrors.IsNotFound(err) {
-			// 	// TODO templatesv1.NoRequeueInterval
-			// 	return nil, templatesv1.NoRequeueInterval, fmt.Errorf("failed to load existing Resource: %w", err)
-			// }
 		}
 
 		// if err := logResourceMessage(logger, "creating new resource", newDeployment); err != nil {
 		// 	// TODO return requeue time
 		// 	return nil, templatesv1.NoRequeueInterval, err
 		// }
+
+		if err := controllerutil.SetOwnerReference(fluxShardSet, &newDeployment, r.Scheme); err != nil {
+			return nil, templatesv1.NoRequeueInterval, fmt.Errorf("failed to set owner reference: %w", err)
+		}
 
 		if err := k8sClient.Create(ctx, &newDeployment); err != nil {
 			// TODO return requeue time
@@ -280,37 +271,18 @@ func (r *FluxShardSetReconciler) patchStatus(ctx context.Context, req ctrl.Reque
 	return r.Status().Patch(ctx, &set, patch)
 }
 
-func unstructuredFromResourceRef(ref templatesv1.ResourceRef) (*unstructured.Unstructured, error) {
+func deploymentFromResourceRef(ref templatesv1.ResourceRef) (*appsv1.Deployment, error) {
 	objMeta, err := object.ParseObjMetadata(ref.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse object ID %s: %w", ref.ID, err)
 	}
-	u := unstructured.Unstructured{}
-	u.SetGroupVersionKind(objMeta.GroupKind.WithVersion(ref.Version))
-	u.SetName(objMeta.Name)
-	u.SetNamespace(objMeta.Namespace)
+	d := appsv1.Deployment{}
 
-	return &u, nil
+	d.Namespace = objMeta.Namespace
+	d.Name = objMeta.Name
+	return &d, nil
+
 }
-
-// func copyUnstructuredContent(existing, newValue *unstructured.Unstructured) *unstructured.Unstructured {
-// 	// TODO update function
-// 	result := unstructured.Unstructured{}
-// 	existing.DeepCopyInto(&result)
-
-// 	disallowedKeys := sets.New("status", "metadata", "kind", "apiVersion")
-
-// 	for k, v := range newValue.Object {
-// 		if !disallowedKeys.Has(k) {
-// 			result.Object[k] = v
-// 		}
-// 	}
-
-// 	result.SetAnnotations(newValue.GetAnnotations())
-// 	result.SetLabels(newValue.GetLabels())
-
-// 	return &result
-// }
 
 func logResourceMessage(logger logr.Logger, msg string, obj runtime.Object) error {
 	// TODO enhance

@@ -60,7 +60,7 @@ spec:
             description: FluxShardSetStatus defines the observed state of FluxShardSet
             properties:
               conditions:
-                description: Conditions holds the conditions for the GitOpsSet
+                description: Conditions holds the conditions for the FluxShardSet
                 items:
                   description: "Condition contains details for one aspect of the current
                     state of this API Resource. --- This struct is intended for direct

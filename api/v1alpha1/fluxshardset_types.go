@@ -71,7 +71,7 @@ type FluxShardSetStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions holds the conditions for the GitOpsSet
+	// Conditions holds the conditions for the FluxShardSet
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
