@@ -178,12 +178,6 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, k8sClie
 		return nil, 0, fmt.Errorf("failed to list current deployments: %w", err)
 	}
 
-	// var deployment appsv1.Deployment
-	// // TODO check fluxShardSet.NAme
-	// if err := r.Client.Get(ctx, client.ObjectKey{Namespace: req.Namespace, Name: fluxShardSet.Name}, &deployment); err != nil {
-	// 	logger.Error(err, "loading deployments")
-	// 	return nil, 0, fmt.Errorf("failed to load deployments %s: %w", fluxShardSet.Name, err)
-	// }
 	generatedDeployments := []appsv1.Deployment{}
 	for i, _ := range deps.Items {
 		dep := deps.Items[i]
@@ -212,9 +206,9 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, k8sClie
 		}
 		entries.Insert(ref)
 
-		// TODO if existing entries has ref, update it
 		if existingEntries.Has(ref) {
 			continue
+			// TODO if existing entries has ref, update it
 
 		}
 
@@ -240,7 +234,7 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, k8sClie
 		})}, templatesv1.NoRequeueInterval, nil
 
 	}
-	// TODO if existingEntries has more Deployments not in generated Deployments, remove them from inventory
+	// if existingEntries has more Deployments not in generated Deployments, delete and remove them from inventory
 	objectsToRemove := existingEntries.Difference(entries)
 	if err := r.removeResourceRefs(ctx, k8sClient, objectsToRemove.List()); err != nil {
 		return nil, templatesv1.NoRequeueInterval, err
@@ -255,8 +249,6 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, k8sClie
 		return x.ID < y.ID
 	})}, templatesv1.NoRequeueInterval, nil
 
-	// return inventory, templatesv1.NoRequeueInterval, nil
-	// return nil, 0, nil
 }
 
 func (r *FluxShardSetReconciler) patchStatus(ctx context.Context, req ctrl.Request, newStatus templatesv1.FluxShardSetStatus) error {

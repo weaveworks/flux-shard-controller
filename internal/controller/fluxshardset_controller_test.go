@@ -297,17 +297,6 @@ func assertFluxShardSetCondition(t *testing.T, shardset *templatesv1.FluxShardSe
 	}
 }
 
-// func assertInventoryHasNoItems(t *testing.T, shardset *templatesv1.FluxShardSet) {
-// 	t.Helper()
-// 	if shardset.Status.Inventory == nil {
-// 		return
-// 	}
-
-// 	if l := len(shardset.Status.Inventory.Entries); l != 0 {
-// 		t.Errorf("expected inventory to have 0 items, got %v", l)
-// 	}
-// }
-
 // Create the provided FluxShardSet
 func createAndReconcileToFinalizedState(t *testing.T, k8sClient client.Client, r *FluxShardSetReconciler, shardset *templatesv1.FluxShardSet) *templatesv1.FluxShardSet {
 	test.AssertNoError(t, k8sClient.Create(context.TODO(), shardset))
