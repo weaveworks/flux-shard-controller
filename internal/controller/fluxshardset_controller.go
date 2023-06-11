@@ -184,7 +184,7 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, k8sClie
 		if _, isShardDeployment := dep.ObjectMeta.Labels["templates.weave.works/shard-set"]; isShardDeployment {
 			continue
 		}
-		newDeployments, err := deploys.GenerateDeployments(fluxShardSet, &deps.Items[i])
+		newDeployments, err := deploys.GenerateDeployments(fluxShardSet, &dep)
 		if err != nil {
 			return nil, 0, fmt.Errorf("failed to generate deployments: %w", err)
 		}

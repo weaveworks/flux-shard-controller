@@ -141,6 +141,7 @@ func TestReconciliation(t *testing.T) {
 			}
 		})
 		reconciler.Create(ctx, srcDeployment)
+		defer reconciler.Delete(ctx, srcDeployment)
 
 		// Reconcile
 		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(shardset)})
@@ -184,6 +185,7 @@ func TestReconciliation(t *testing.T) {
 			}
 		})
 		reconciler.Create(ctx, srcDeployment)
+		defer reconciler.Delete(ctx, srcDeployment)
 
 		// Reconcile
 		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(shardset)})
@@ -207,41 +209,32 @@ func TestReconciliation(t *testing.T) {
 
 	})
 
-	// t.Run("don't create deployments", func(t *testing.T) {
-	// 	ctx := context.TODO()
-	// 	// Create shard set and src deployment
-	// 	shardset := createAndReconcileToFinalizedState(t, k8sClient, reconciler, makeTestFluxShardSet(t, func(shardset *templatesv1.FluxShardSet) {
-	// 		shardset.Spec.Type = "kustomize"
-	// 		shardset.Spec.Shards = []templatesv1.ShardSpec{
-	// 			{
-	// 				Name: "shard-1",
-	// 			},
-	// 		}
+	t.Run("don't create deployments if srcdeployments not ignoring sharding", func(t *testing.T) {
+		ctx := context.TODO()
+		// Create shard set and src deployment
+		shardset := createAndReconcileToFinalizedState(t, k8sClient, reconciler, makeTestFluxShardSet(t, func(shardset *templatesv1.FluxShardSet) {
+			shardset.Spec.Type = "kustomize"
+			shardset.Spec.Shards = []templatesv1.ShardSpec{
+				{
+					Name: "shard-1",
+				},
+			}
 
-	// 	}))
-	// 	defer deleteFluxShardSetAndFinalize(t, k8sClient, reconciler, shardset)
+		}))
+		defer deleteFluxShardSetAndFinalize(t, k8sClient, reconciler, shardset)
 
-	// 	srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
-	// 		d.Annotations = map[string]string{}
-	// 		d.ObjectMeta.Name = "kustomize-controller"
-	// 	})
-	// 	reconciler.Create(ctx, srcDeployment)
+		srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
+			d.Annotations = map[string]string{}
+			d.ObjectMeta.Name = "kustomize-controller"
+		})
+		reconciler.Create(ctx, srcDeployment)
 
-	// 	// Reconcile
-	// 	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(shardset)})
-	// 	test.AssertNoError(t, err)
-	// 	test.AssertErrorMatch(t, "Sharding label not found", err)
+		// Reconcile
+		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(shardset)})
+		// Check for error matching expected error from deploys.generateDeployments
+		test.AssertErrorMatch(t, "failed to generate deployments: deployment default/kustomize-controller is not configured to ignore sharding", err)
 
-	// 	// Check fluxshardset
-	// 	updated := &templatesv1.FluxShardSet{}
-	// 	test.AssertNoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(shardset), updated))
-	// 	assertDeploymentsExist(t, k8sClient, "default", "shard-1-kustomize-controller", "shard-2-kustomize-controller")
-
-	// 	reconcileAndAssertFinalizerExists(t, k8sClient, reconciler, shardset)
-	// 	// Check deployment for shard-1 wasn't created
-	// 	assertDeploymentsDontExist(t, k8sClient, "default", "shard-1-kustomize-controller")
-
-	// })
+	})
 
 }
 
