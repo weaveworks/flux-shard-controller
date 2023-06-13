@@ -46,10 +46,8 @@ type FluxShardSetReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-//+kubebuilder:rbac:groups=templates.weave.works,resources=fluxshardsets,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=templates.weave.works,resources=fluxshardsets/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=templates.weave.works,resources=fluxshardsets/finalizers,verbs=update
-
+// +kubebuilder:rbac:groups=templates.weave.works,resources=fluxshardsets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=templates.weave.works,resources=fluxshardsets/status,verbs=get;update;patch
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 // TODO(user): Modify the Reconcile function to compare the state specified by
@@ -72,14 +70,6 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		"shards", shardSet.Spec.Shards,
 	)
 
-	// Add finalizer first if it doesn't exist to avoid the race condition
-	// between init and delete.
-	if !controllerutil.ContainsFinalizer(&shardSet, templatesv1.FluxShardSetFinalizer) {
-		controllerutil.AddFinalizer(&shardSet, templatesv1.FluxShardSetFinalizer)
-
-		return ctrl.Result{Requeue: true}, r.Update(ctx, &shardSet)
-	}
-
 	// Skip reconciliation if the FluxShardSet is suspended.
 	if shardSet.Spec.Suspend {
 		logger.Info("Reconciliation is suspended for this FluxShardSet")
@@ -87,10 +77,6 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 
 	k8sClient := r.Client
-
-	if !shardSet.ObjectMeta.DeletionTimestamp.IsZero() {
-		return r.finalize(ctx, &shardSet, k8sClient)
-	}
 
 	// Set the value of the reconciliation request in status.
 	if v, ok := fluxMeta.ReconcileAnnotationValue(shardSet.GetAnnotations()); ok {
@@ -122,27 +108,6 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// return ctrl.Result{RequeueAfter: requeue}, nil
 	return ctrl.Result{}, nil
-}
-
-func (r *FluxShardSetReconciler) finalize(ctx context.Context, shardset *templatesv1.FluxShardSet, k8sClient client.Client) (ctrl.Result, error) {
-	logger := ctrl.LoggerFrom(ctx)
-	logger.Info("finalizing resources")
-
-	if !shardset.Spec.Suspend &&
-		shardset.Status.Inventory != nil &&
-		shardset.Status.Inventory.Entries != nil {
-
-		if err := r.removeResourceRefs(ctx, k8sClient, shardset.Status.Inventory.Entries); err != nil {
-			return ctrl.Result{}, err
-		}
-
-		logger.Info("cleaned resources")
-	}
-
-	logger.Info("removing the finalizer")
-	// Remove our finalizer from the list and update it
-	controllerutil.RemoveFinalizer(shardset, templatesv1.FluxShardSetFinalizer)
-	return ctrl.Result{}, r.Update(ctx, shardset)
 }
 
 func (r *FluxShardSetReconciler) removeResourceRefs(ctx context.Context, k8sClient client.Client, deletions []templatesv1.ResourceRef) error {
