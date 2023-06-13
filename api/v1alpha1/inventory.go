@@ -7,7 +7,7 @@ import (
 	"sigs.k8s.io/cli-utils/pkg/object"
 )
 
-// ResourceInventory contains a list of Kubernetes resource object references that have been applied by a Kustomization.
+// ResourceInventory contains a list of Kubernetes resource object references that have been created for the Shard Set.
 type ResourceInventory struct {
 	// Entries of Kubernetes resource object references.
 	Entries []ResourceRef `json:"entries,omitempty"`

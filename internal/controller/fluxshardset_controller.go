@@ -19,7 +19,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -76,15 +75,12 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		return ctrl.Result{}, nil
 	}
 
-	k8sClient := r.Client
-
 	// Set the value of the reconciliation request in status.
 	if v, ok := fluxMeta.ReconcileAnnotationValue(shardSet.GetAnnotations()); ok {
 		shardSet.Status.LastHandledReconcileAt = v
 	}
 
-	inventory, _, err := r.reconcileResources(ctx, k8sClient, &shardSet, req)
-	// inventory, requeue, _ := r.reconcileResources(ctx, k8sClient, &shardSet, req)
+	inventory, err := r.reconcileResources(ctx, &shardSet, req)
 
 	if err != nil {
 		templatesv1.SetFluxShardSetReadiness(&shardSet, metav1.ConditionFalse, templatesv1.ReconciliationFailedReason, err.Error())
@@ -106,7 +102,6 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		}
 	}
 
-	// return ctrl.Result{RequeueAfter: requeue}, nil
 	return ctrl.Result{}, nil
 }
 
@@ -135,12 +130,13 @@ func (r *FluxShardSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, k8sClient client.Client, fluxShardSet *templatesv1.FluxShardSet, req ctrl.Request) (*templatesv1.ResourceInventory, time.Duration, error) {
+func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, fluxShardSet *templatesv1.FluxShardSet, req ctrl.Request) (*templatesv1.ResourceInventory, error) {
 	// logger := log.FromContext(ctx)
+	k8sClient := r.Client
 	deps := &appsv1.DeploymentList{}
 	err := k8sClient.List(ctx, deps, &client.ListOptions{Namespace: req.Namespace})
 	if err != nil {
-		return nil, 0, fmt.Errorf("failed to list current deployments: %w", err)
+		return nil, fmt.Errorf("failed to list current deployments: %w", err)
 	}
 
 	generatedDeployments := []appsv1.Deployment{}
@@ -151,7 +147,7 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, k8sClie
 		}
 		newDeployments, err := deploys.GenerateDeployments(fluxShardSet, &dep)
 		if err != nil {
-			return nil, 0, fmt.Errorf("failed to generate deployments: %w", err)
+			return nil, fmt.Errorf("failed to generate deployments: %w", err)
 		}
 		for _, d := range newDeployments {
 			generatedDeployments = append(generatedDeployments, *d)
@@ -167,7 +163,7 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, k8sClie
 	for _, newDeployment := range generatedDeployments {
 		ref, err := templatesv1.ResourceRefFromObject(&newDeployment)
 		if err != nil {
-			return nil, templatesv1.NoRequeueInterval, fmt.Errorf("failed to update inventory: %w", err)
+			return nil, fmt.Errorf("failed to update inventory: %w", err)
 		}
 		entries.Insert(ref)
 
@@ -177,42 +173,30 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, k8sClie
 
 		}
 
-		// if err := logResourceMessage(logger, "creating new resource", newDeployment); err != nil {
-		// 	// TODO return requeue time
-		// 	return nil, templatesv1.NoRequeueInterval, err
-		// }
-
 		if err := controllerutil.SetOwnerReference(fluxShardSet, &newDeployment, r.Scheme); err != nil {
-			return nil, templatesv1.NoRequeueInterval, fmt.Errorf("failed to set owner reference: %w", err)
+			return nil, fmt.Errorf("failed to set owner reference: %w", err)
 		}
 
 		if err := k8sClient.Create(ctx, &newDeployment); err != nil {
-			// TODO return requeue time
-			return nil, templatesv1.NoRequeueInterval, fmt.Errorf("failed to create Deployment: %w", err)
+			return nil, fmt.Errorf("failed to create Deployment: %w", err)
 		}
 	}
 
 	if fluxShardSet.Status.Inventory == nil {
-		// TODO return requeue time
 		return &templatesv1.ResourceInventory{Entries: entries.SortedList(func(x, y templatesv1.ResourceRef) bool {
 			return x.ID < y.ID
-		})}, templatesv1.NoRequeueInterval, nil
+		})}, nil
 
 	}
 	// if existingEntries has more Deployments not in generated Deployments, delete and remove them from inventory
 	objectsToRemove := existingEntries.Difference(entries)
 	if err := r.removeResourceRefs(ctx, k8sClient, objectsToRemove.List()); err != nil {
-		return nil, templatesv1.NoRequeueInterval, err
+		return nil, err
 	}
-	// TODO calculateInterval
-	// requeueAfter, err := calculateInterval(fluxShardSet, generatedDeployments)
-	// if err != nil {
-	// 	return nil, nil, fmt.Errorf("failed to calculate requeue interval: %w", err)
-	// }
 
 	return &templatesv1.ResourceInventory{Entries: entries.SortedList(func(x, y templatesv1.ResourceRef) bool {
 		return x.ID < y.ID
-	})}, templatesv1.NoRequeueInterval, nil
+	})}, nil
 
 }
 
