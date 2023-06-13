@@ -131,7 +131,7 @@ func (r *FluxShardSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, fluxShardSet *templatesv1.FluxShardSet, req ctrl.Request) (*templatesv1.ResourceInventory, error) {
-	// logger := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 	k8sClient := r.Client
 	deps := &appsv1.DeploymentList{}
 	err := k8sClient.List(ctx, deps, &client.ListOptions{Namespace: req.Namespace})
@@ -180,6 +180,7 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, fluxSha
 		if err := k8sClient.Create(ctx, &newDeployment); err != nil {
 			return nil, fmt.Errorf("failed to create Deployment: %w", err)
 		}
+		logger.Info("created new deployment", "name", newDeployment.Name)
 	}
 
 	if fluxShardSet.Status.Inventory == nil {
