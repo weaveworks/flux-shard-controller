@@ -41,20 +41,30 @@ spec:
                   description: ShardSpec defines a shard to deploy
                   properties:
                     name:
-                      description: 'Name is the name of the shard TODO: make this
-                        required'
+                      description: Name is the name of the shard
                       type: string
+                  required:
+                  - name
                   type: object
                 type: array
+              sourceDeploymentRef:
+                description: Reference the source Deployment.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                  namespace:
+                    description: Namespace of the referent.
+                    type: string
+                required:
+                - name
+                type: object
               suspend:
                 description: Suspend tells the controller to suspend the reconciliation
                   of this FluxShardSet.
                 type: boolean
-              type:
-                description: 'Type is the type of the deployment, e.g. kustomization,
-                  helm, source, notification TODO: make this an enum TODO: make this
-                  required'
-                type: string
+            required:
+            - sourceDeploymentRef
             type: object
           status:
             description: FluxShardSetStatus defines the observed state of FluxShardSet

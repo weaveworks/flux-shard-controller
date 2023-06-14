@@ -9,7 +9,9 @@ metadata:
     app.kubernetes.io/created-by: flux-shard-controller
   name: fluxshardset-sample
 spec:
-  type: kustomization
+  sourceDeploymentRef:
+    name: kustomize-controller
+    namespace: flux-system
   shards:
     - name: shard1
     - name: shard2

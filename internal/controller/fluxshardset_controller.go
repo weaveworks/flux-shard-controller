@@ -49,25 +49,15 @@ type FluxShardSetReconciler struct {
 // +kubebuilder:rbac:groups=templates.weave.works,resources=fluxshardsets/status,verbs=get;update;patch
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the FluxShardSet object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.14.4/pkg/reconcile
 func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	shardSet := templatesv1.FluxShardSet{}
-	if err := r.Get(ctx, req.NamespacedName, &shardSet); err != nil {
+	if err := r.Client.Get(ctx, req.NamespacedName, &shardSet); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-
-	logger.Info("Reconciling shardSet",
-		"type", shardSet.Spec.Type,
-		"shards", shardSet.Spec.Shards,
-	)
 
 	// Skip reconciliation if the FluxShardSet is suspended.
 	if shardSet.Spec.Suspend {
@@ -80,7 +70,7 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 		shardSet.Status.LastHandledReconcileAt = v
 	}
 
-	inventory, err := r.reconcileResources(ctx, &shardSet, req)
+	inventory, err := r.reconcileResources(ctx, &shardSet)
 
 	if err != nil {
 		templatesv1.SetFluxShardSetReadiness(&shardSet, metav1.ConditionFalse, templatesv1.ReconciliationFailedReason, err.Error())
@@ -93,7 +83,7 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	if inventory != nil {
 		templatesv1.SetReadyWithInventory(&shardSet, inventory, templatesv1.ReconciliationSucceededReason,
-			fmt.Sprintf("%d resources created", len(inventory.Entries)))
+			fmt.Sprintf("%d shard(s) created", len(inventory.Entries)))
 
 		if err := r.patchStatus(ctx, req, shardSet.Status); err != nil {
 			templatesv1.SetFluxShardSetReadiness(&shardSet, metav1.ConditionFalse, templatesv1.ReconciliationFailedReason, err.Error())
@@ -105,7 +95,7 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{}, nil
 }
 
-func (r *FluxShardSetReconciler) removeResourceRefs(ctx context.Context, k8sClient client.Client, deletions []templatesv1.ResourceRef) error {
+func (r *FluxShardSetReconciler) removeResourceRefs(ctx context.Context, deletions []templatesv1.ResourceRef) error {
 	logger := log.FromContext(ctx)
 	for _, v := range deletions {
 		d, err := deploymentFromResourceRef(v)
@@ -115,7 +105,7 @@ func (r *FluxShardSetReconciler) removeResourceRefs(ctx context.Context, k8sClie
 		if err := logResourceMessage(logger, "deleting resource", d); err != nil {
 			return err
 		}
-		if err := k8sClient.Delete(ctx, d); err != nil {
+		if err := r.Client.Delete(ctx, d); err != nil {
 			return fmt.Errorf("failed to delete %v: %w", d, err)
 		}
 	}
@@ -130,80 +120,85 @@ func (r *FluxShardSetReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, fluxShardSet *templatesv1.FluxShardSet, req ctrl.Request) (*templatesv1.ResourceInventory, error) {
+func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, fluxShardSet *templatesv1.FluxShardSet) (*templatesv1.ResourceInventory, error) {
 	logger := log.FromContext(ctx)
-	k8sClient := r.Client
-	deps := &appsv1.DeploymentList{}
-	err := k8sClient.List(ctx, deps, &client.ListOptions{Namespace: req.Namespace})
+
+	srcDeploy, err := r.getSourceDeployment(ctx, fluxShardSet)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list current deployments: %w", err)
+		return nil, err
 	}
 
-	generatedDeployments := []appsv1.Deployment{}
-	for i, _ := range deps.Items {
-		dep := deps.Items[i]
-		if _, isShardDeployment := dep.ObjectMeta.Labels["templates.weave.works/shard-set"]; isShardDeployment {
-			continue
-		}
-		newDeployments, err := deploys.GenerateDeployments(fluxShardSet, &dep)
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate deployments: %w", err)
-		}
-		for _, d := range newDeployments {
-			generatedDeployments = append(generatedDeployments, *d)
-		}
+	generatedDeployments, err := deploys.GenerateDeployments(fluxShardSet, srcDeploy)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate deployments: %w", err)
 	}
 
-	existingEntries := sets.New[templatesv1.ResourceRef]()
+	existingInventory := sets.New[templatesv1.ResourceRef]()
 	if fluxShardSet.Status.Inventory != nil {
-		existingEntries.Insert(fluxShardSet.Status.Inventory.Entries...)
+		existingInventory.Insert(fluxShardSet.Status.Inventory.Entries...)
 	}
 
-	entries := sets.New[templatesv1.ResourceRef]()
+	// newInventory holds the resource refs for the generated resources.
+	newInventory := sets.New[templatesv1.ResourceRef]()
+
 	for _, newDeployment := range generatedDeployments {
-		ref, err := templatesv1.ResourceRefFromObject(&newDeployment)
+		ref, err := templatesv1.ResourceRefFromObject(newDeployment)
 		if err != nil {
 			return nil, fmt.Errorf("failed to update inventory: %w", err)
 		}
-		entries.Insert(ref)
 
-		if existingEntries.Has(ref) {
-			continue
+		if existingInventory.Has(ref) {
+			newInventory.Insert(ref)
 			// TODO if existing entries has ref, update it
-
+			continue
 		}
 
-		if err := controllerutil.SetOwnerReference(fluxShardSet, &newDeployment, r.Scheme); err != nil {
+		if err := controllerutil.SetOwnerReference(fluxShardSet, newDeployment, r.Scheme); err != nil {
 			return nil, fmt.Errorf("failed to set owner reference: %w", err)
 		}
 
-		if err := k8sClient.Create(ctx, &newDeployment); err != nil {
+		if err := r.Client.Create(ctx, newDeployment); err != nil {
 			return nil, fmt.Errorf("failed to create Deployment: %w", err)
 		}
-		logger.Info("created new deployment", "name", newDeployment.Name)
+		newInventory.Insert(ref)
+		if err := logResourceMessage(logger, "created new deployment", newDeployment); err != nil {
+			return nil, err
+		}
 	}
 
 	if fluxShardSet.Status.Inventory == nil {
-		return &templatesv1.ResourceInventory{Entries: entries.SortedList(func(x, y templatesv1.ResourceRef) bool {
+		return &templatesv1.ResourceInventory{Entries: newInventory.SortedList(func(x, y templatesv1.ResourceRef) bool {
 			return x.ID < y.ID
 		})}, nil
 
 	}
 	// if existingEntries has more Deployments not in generated Deployments, delete and remove them from inventory
-	objectsToRemove := existingEntries.Difference(entries)
-	if err := r.removeResourceRefs(ctx, k8sClient, objectsToRemove.List()); err != nil {
+	objectsToRemove := existingInventory.Difference(newInventory)
+	if err := r.removeResourceRefs(ctx, objectsToRemove.List()); err != nil {
 		return nil, err
 	}
 
-	return &templatesv1.ResourceInventory{Entries: entries.SortedList(func(x, y templatesv1.ResourceRef) bool {
+	return &templatesv1.ResourceInventory{Entries: newInventory.SortedList(func(x, y templatesv1.ResourceRef) bool {
 		return x.ID < y.ID
 	})}, nil
+}
 
+func (r *FluxShardSetReconciler) getSourceDeployment(ctx context.Context, fluxShardSet *templatesv1.FluxShardSet) (*appsv1.Deployment, error) {
+	srcDeployKey := client.ObjectKey{
+		Name:      fluxShardSet.Spec.SourceDeploymentRef.Name,
+		Namespace: fluxShardSet.Spec.SourceDeploymentRef.Namespace,
+	}
+	srcDeploy := &appsv1.Deployment{}
+	if err := r.Client.Get(ctx, srcDeployKey, srcDeploy); err != nil {
+		return nil, fmt.Errorf("failed to load source deployment: %w", err)
+	}
+
+	return srcDeploy, nil
 }
 
 func (r *FluxShardSetReconciler) patchStatus(ctx context.Context, req ctrl.Request, newStatus templatesv1.FluxShardSetStatus) error {
 	var set templatesv1.FluxShardSet
-	if err := r.Get(ctx, req.NamespacedName, &set); err != nil {
+	if err := r.Client.Get(ctx, req.NamespacedName, &set); err != nil {
 		return err
 	}
 
@@ -222,12 +217,11 @@ func deploymentFromResourceRef(ref templatesv1.ResourceRef) (*appsv1.Deployment,
 
 	d.Namespace = objMeta.Namespace
 	d.Name = objMeta.Name
-	return &d, nil
 
+	return &d, nil
 }
 
 func logResourceMessage(logger logr.Logger, msg string, obj runtime.Object) error {
-	// TODO enhance
 	namespace, err := accessor.Namespace(obj)
 	if err != nil {
 		return err
