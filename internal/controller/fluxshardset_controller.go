@@ -172,6 +172,7 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, fluxSha
 		})}, nil
 
 	}
+
 	// if existingEntries has more Deployments not in generated Deployments, delete and remove them from inventory
 	objectsToRemove := existingInventory.Difference(newInventory)
 	if err := r.removeResourceRefs(ctx, objectsToRemove.List()); err != nil {
