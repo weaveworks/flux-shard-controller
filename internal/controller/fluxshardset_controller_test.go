@@ -109,6 +109,7 @@ func TestReconciliation(t *testing.T) {
 
 	t.Run("reconciling creation of new deployment when it already exists", func(t *testing.T) {
 		ctx := context.TODO()
+
 		srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
 			d.Spec.Template.Spec.Containers[0].Args = []string{
 				"--watch-label-selector=!sharding.fluxcd.io/key",
@@ -337,7 +338,6 @@ func assertDeploymentsExist(t *testing.T, cl client.Client, ns string, want ...s
 	for _, dep := range d.Items {
 		existingDeps = append(existingDeps, dep.Name)
 	}
-
 	if diff := cmp.Diff(want, existingDeps); diff != "" {
 		t.Fatalf("didn't find deployments, got different names: \n%s", diff)
 	}
