@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"testing"
 
 	"github.com/fluxcd/pkg/apis/meta"
@@ -218,15 +217,19 @@ func TestReconciliation(t *testing.T) {
 		test.AssertInventoryHasItems(t, shardSet, shard1Deploy, shard2Deploy)
 
 		// Update shard set by removing shard-2
-		shardSet.Spec.Shards = shardSet.Spec.Shards[:1]
+		shardSet.Spec.Shards = []templatesv1.ShardSpec{
+			{
+				Name: "shard-1",
+			},
+		}
 		test.AssertNoError(t, k8sClient.Update(ctx, shardSet))
-
 		reconcileAndReload(t, k8sClient, reconciler, shardSet)
 
 		// Check deployment for shard-1 exists and deployment for shard-2 is deleted
 		test.AssertInventoryHasItems(t, shardSet, shard1Deploy)
-		assertDeploymentsExist(t, k8sClient, "default", "shard-1-kustomize-controller")
+		assertDeploymentsExist(t, k8sClient, "default", "kustomize-controller", "shard-1-kustomize-controller")
 		assertDeploymentsDontExist(t, k8sClient, "default", "shard-2-kustomize-controller")
+
 	})
 
 	t.Run("Create new deployments with new shard names and delete old deployments after removing shard names", func(t *testing.T) {
@@ -321,7 +324,7 @@ func TestReconciliation(t *testing.T) {
 		test.AssertErrorMatch(t, "failed to generate deployments: deployment default/kustomize-controller is not configured to ignore sharding", err)
 
 		assertFluxShardSetCondition(t, shardSet, meta.ReadyCondition,
-			`failed to generate deployments: deployment default/kustomize-controller is not configured to ignore sharding`)
+			"failed to generate deployments: deployment default/kustomize-controller is not configured to ignore sharding")
 	})
 }
 
@@ -330,19 +333,13 @@ func assertDeploymentsExist(t *testing.T, cl client.Client, ns string, want ...s
 	d := &appsv1.DeploymentList{}
 	test.AssertNoError(t, cl.List(context.TODO(), d, client.InNamespace(ns)))
 
-	existingNames := func(l []appsv1.Deployment) []string {
-		names := []string{}
-		for _, v := range l {
-			names = append(names, v.GetName())
-		}
-		sort.Strings(names)
-		return names
-	}(d.Items)
+	existingDeps := []string{}
+	for _, dep := range d.Items {
+		existingDeps = append(existingDeps, dep.Name)
+	}
 
-	sort.Strings(want)
-
-	if diff := cmp.Diff(want, existingNames); diff != "" {
-		t.Fatalf("got different names:\n%s", diff)
+	if diff := cmp.Diff(want, existingDeps); diff != "" {
+		t.Fatalf("didn't find deployments, got different names: \n%s", diff)
 	}
 }
 
@@ -351,18 +348,22 @@ func assertDeploymentsDontExist(t *testing.T, cl client.Client, ns string, deps 
 	d := &appsv1.DeploymentList{}
 	test.AssertNoError(t, cl.List(context.TODO(), d, client.InNamespace(ns)))
 
-	existingNames := func(l []appsv1.Deployment) []string {
-		names := []string{}
-		for _, v := range l {
-			names = append(names, v.GetName())
-		}
-		sort.Strings(names)
-		return names
-	}(d.Items)
+	existingDeps := []string{}
+	for _, dep := range d.Items {
+		existingDeps = append(existingDeps, dep.Name)
+	}
 
-	sort.Strings(deps)
-	if diff := cmp.Diff(deps, existingNames); diff != "" {
-		t.Fatalf("Found deployments that shouldn't be found:\n%s", diff)
+	matches := []string{}
+	for _, dep := range deps {
+		for _, existingDep := range existingDeps {
+			if dep == existingDep {
+				matches = append(matches, dep)
+			}
+		}
+	}
+	if len(matches) > 0 {
+		cmp.Diff(matches, []string{})
+		t.Fatalf("found deployments that shouldn't be found:\n%s", cmp.Diff(matches, []string{}))
 	}
 }
 
