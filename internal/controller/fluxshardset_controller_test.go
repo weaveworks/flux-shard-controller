@@ -10,7 +10,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	appsv1 "k8s.io/api/apps/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -68,7 +67,7 @@ func TestReconciliation(t *testing.T) {
 		test.AssertNoError(t, k8sClient.Create(ctx, srcDeployment))
 		defer k8sClient.Delete(ctx, srcDeployment)
 
-		shardSet := newTestFluxShardSet(func(set *templatesv1.FluxShardSet) {
+		shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
 			set.Spec.Shards = []templatesv1.ShardSpec{
 				{
 					Name: "shard-1",
@@ -118,7 +117,7 @@ func TestReconciliation(t *testing.T) {
 		test.AssertNoError(t, k8sClient.Create(ctx, srcDeployment))
 		defer k8sClient.Delete(ctx, srcDeployment)
 
-		shardSet := newTestFluxShardSet(func(set *templatesv1.FluxShardSet) {
+		shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
 			set.Spec.Shards = []templatesv1.ShardSpec{
 				{
 					Name: "shard-1",
@@ -172,7 +171,7 @@ func TestReconciliation(t *testing.T) {
 		defer reconciler.Delete(ctx, srcDeployment)
 
 		// Create shard set and src deployment
-		shardSet := newTestFluxShardSet(func(set *templatesv1.FluxShardSet) {
+		shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
 			set.Spec.SourceDeploymentRef = templatesv1.SourceDeploymentReference{
 				Name:      srcDeployment.Name,
 				Namespace: srcDeployment.Namespace,
@@ -244,7 +243,7 @@ func TestReconciliation(t *testing.T) {
 		defer k8sClient.Delete(ctx, srcDeployment)
 
 		// Create shard set and src deployment
-		shardSet := newTestFluxShardSet(func(set *templatesv1.FluxShardSet) {
+		shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
 			set.Spec.Shards = []templatesv1.ShardSpec{
 				{
 					Name: "shard-a",
@@ -305,7 +304,7 @@ func TestReconciliation(t *testing.T) {
 		defer k8sClient.Delete(ctx, srcDeployment)
 
 		// Create shard set and src deployment
-		shardSet := newTestFluxShardSet(func(set *templatesv1.FluxShardSet) {
+		shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
 			set.Spec.SourceDeploymentRef = templatesv1.SourceDeploymentReference{
 				Name:      srcDeployment.Name,
 				Namespace: srcDeployment.Namespace,
@@ -386,22 +385,6 @@ func reconcileAndReload(t *testing.T, cl client.Client, reconciler *FluxShardSet
 	test.AssertNoError(t, err)
 
 	test.AssertNoError(t, cl.Get(ctx, client.ObjectKeyFromObject(shardset), shardset))
-}
-
-func newTestFluxShardSet(opts ...func(*templatesv1.FluxShardSet)) *templatesv1.FluxShardSet {
-	fluxshardset := &templatesv1.FluxShardSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-shard-set",
-			Namespace: "default",
-		},
-		Spec: templatesv1.FluxShardSetSpec{},
-	}
-
-	for _, o := range opts {
-		o(fluxshardset)
-	}
-
-	return fluxshardset
 }
 
 func deleteFluxShardSet(t *testing.T, cl client.Client, shardset *templatesv1.FluxShardSet) {
