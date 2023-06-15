@@ -295,7 +295,6 @@ func TestReconciliation(t *testing.T) {
 
 	t.Run("don't create deployments if srcdeployment not ignoring sharding", func(t *testing.T) {
 		ctx := context.TODO()
-
 		srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
 			d.Annotations = map[string]string{}
 			d.ObjectMeta.Name = "kustomize-controller"
@@ -323,6 +322,8 @@ func TestReconciliation(t *testing.T) {
 		// Check for error matching expected error from deploys.generateDeployments
 		test.AssertErrorMatch(t, "failed to generate deployments: deployment default/kustomize-controller is not configured to ignore sharding", err)
 
+		// reload
+		test.AssertNoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(shardSet), shardSet))
 		assertFluxShardSetCondition(t, shardSet, meta.ReadyCondition,
 			"failed to generate deployments: deployment default/kustomize-controller is not configured to ignore sharding")
 	})
