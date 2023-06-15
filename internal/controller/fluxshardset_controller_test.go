@@ -317,15 +317,10 @@ func TestReconciliation(t *testing.T) {
 		test.AssertNoError(t, k8sClient.Create(ctx, shardSet))
 		defer deleteFluxShardSet(t, k8sClient, shardSet)
 
-		// Reconcile
-		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(shardSet)})
-		// Check for error matching expected error from deploys.generateDeployments
-		test.AssertErrorMatch(t, "failed to generate deployments: deployment default/kustomize-controller is not configured to ignore sharding", err)
+		expectedErrMsg := "failed to generate deployments: deployment default/kustomize-controller is not configured to ignore sharding"
+		reconcileWithErrorAndReload(t, k8sClient, reconciler, shardSet, expectedErrMsg)
 
-		// reload
-		test.AssertNoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(shardSet), shardSet))
-		assertFluxShardSetCondition(t, shardSet, meta.ReadyCondition,
-			"failed to generate deployments: deployment default/kustomize-controller is not configured to ignore sharding")
+		assertFluxShardSetCondition(t, shardSet, meta.ReadyCondition, expectedErrMsg)
 	})
 }
 
@@ -386,6 +381,17 @@ func reconcileAndReload(t *testing.T, cl client.Client, reconciler *FluxShardSet
 	test.AssertNoError(t, err)
 
 	test.AssertNoError(t, cl.Get(ctx, client.ObjectKeyFromObject(shardset), shardset))
+}
+
+func reconcileWithErrorAndReload(t *testing.T, cl client.Client, reconciler *FluxShardSetReconciler, shardSet *templatesv1.FluxShardSet, expectedErrMsg string) {
+	t.Helper()
+	ctx := context.TODO()
+	_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(shardSet)})
+	// Check for error matching expected error
+	test.AssertErrorMatch(t, expectedErrMsg, err)
+
+	// reload
+	test.AssertNoError(t, cl.Get(ctx, client.ObjectKeyFromObject(shardSet), shardSet))
 }
 
 func deleteFluxShardSet(t *testing.T, cl client.Client, shardset *templatesv1.FluxShardSet) {
