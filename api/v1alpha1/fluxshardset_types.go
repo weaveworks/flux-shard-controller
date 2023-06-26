@@ -17,21 +17,26 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"github.com/fluxcd/pkg/apis/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+type SourceDeploymentReference struct {
+	// Namespace of the referent.
+	Namespace string `json:"namespace,omitempty"`
+	// Name of the referent.
+	Name string `json:"name"`
+}
 
 // FluxShardSetSpec defines the desired state of FluxShardSet
 type FluxShardSetSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Suspend tells the controller to suspend the reconciliation of this
+	// FluxShardSet.
+	// +optional
+	Suspend bool `json:"suspend,omitempty"`
 
-	// Type is the type of the deployment, e.g. kustomization, helm, source, notification
-	// TODO: make this an enum
-	// TODO: make this required
-	Type string `json:"type,omitempty"`
+	// Reference the source Deployment.
+	SourceDeploymentRef SourceDeploymentReference `json:"sourceDeploymentRef"`
 
 	// Shards is a list of shards to deploy
 	Shards []ShardSpec `json:"shards,omitempty"`
@@ -40,18 +45,32 @@ type FluxShardSetSpec struct {
 // ShardSpec defines a shard to deploy
 type ShardSpec struct {
 	// Name is the name of the shard
-	// TODO: make this required
-	Name string `json:"name,omitempty"`
+	Name string `json:"name"`
 }
 
 // FluxShardSetStatus defines the observed state of FluxShardSet
 type FluxShardSetStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	meta.ReconcileRequestStatus `json:",inline"`
+
+	// ObservedGeneration is the last observed generation of the HelmRepository
+	// object.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
+	// Conditions holds the conditions for the FluxShardSet
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// Inventory contains the list of Kubernetes resource object references that
+	// have been successfully applied
+	// +optional
+	Inventory *ResourceInventory `json:"inventory,omitempty"`
 }
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status",description=""
+//+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].message",description=""
 
 // FluxShardSet is the Schema for the fluxshardsets API
 type FluxShardSet struct {

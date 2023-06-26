@@ -19,8 +19,6 @@ rules:
   - watch
 - apiGroups:
   - templates.weave.works
-  resources:
-  - fluxshardsets/finalizers
   verbs:
   - update
 - apiGroups:

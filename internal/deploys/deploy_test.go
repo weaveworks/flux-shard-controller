@@ -15,6 +15,8 @@ import (
 	shardv1 "github.com/weaveworks/flux-shard-controller/api/v1alpha1"
 )
 
+const testControllerName = "kustomize-controller"
+
 func TestNewDeploymentFromDeployment(t *testing.T) {
 	depl := loadDeploymentFixture(t, "testdata/kustomize-controller.yaml")
 
@@ -37,7 +39,9 @@ func TestGenerateDeployments(t *testing.T) {
 			name: "generate when no shards are defined",
 			fluxShardSet: &shardv1.FluxShardSet{
 				Spec: shardv1.FluxShardSetSpec{
-					Type:   "kustomize",
+					SourceDeploymentRef: shardv1.SourceDeploymentReference{
+						Name: testControllerName,
+					},
 					Shards: []shardv1.ShardSpec{},
 				},
 			},
@@ -55,7 +59,9 @@ func TestGenerateDeployments(t *testing.T) {
 					Name: "test-shard-set",
 				},
 				Spec: shardv1.FluxShardSetSpec{
-					Type: "kustomize",
+					SourceDeploymentRef: shardv1.SourceDeploymentReference{
+						Name: testControllerName,
+					},
 					Shards: []shardv1.ShardSpec{
 						{
 							Name: "shard-1",
@@ -64,6 +70,7 @@ func TestGenerateDeployments(t *testing.T) {
 				},
 			},
 			src: newTestDeployment(func(d *appsv1.Deployment) {
+				d.ObjectMeta.Name = "kustomize-controller"
 				d.Spec.Template.Spec.Containers[0].Args = []string{
 					"--watch-label-selector=!sharding.fluxcd.io/key",
 				}
@@ -89,7 +96,9 @@ func TestGenerateDeployments(t *testing.T) {
 					Name: "test-shard-set",
 				},
 				Spec: shardv1.FluxShardSetSpec{
-					Type: "kustomize",
+					SourceDeploymentRef: shardv1.SourceDeploymentReference{
+						Name: testControllerName,
+					},
 					Shards: []shardv1.ShardSpec{
 						{
 							Name: "shard-a",
@@ -137,7 +146,9 @@ func TestGenerateDeployments(t *testing.T) {
 					Name: "test-shard-set",
 				},
 				Spec: shardv1.FluxShardSetSpec{
-					Type: "kustomize",
+					SourceDeploymentRef: shardv1.SourceDeploymentReference{
+						Name: testControllerName,
+					},
 					Shards: []shardv1.ShardSpec{
 						{
 							Name: "shard-1",
@@ -212,7 +223,7 @@ func TestGenerateDeployments_errors(t *testing.T) {
 func newTestDeployment(opts ...func(*appsv1.Deployment)) *appsv1.Deployment {
 	deploy := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "kustomize-controller",
+			Name:      testControllerName,
 			Namespace: "flux-system",
 		},
 		Spec: appsv1.DeploymentSpec{
