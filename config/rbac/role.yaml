@@ -6,6 +6,18 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
   - templates.weave.works
   resources:
   - fluxshardsets
@@ -17,10 +29,6 @@ rules:
   - patch
   - update
   - watch
-- apiGroups:
-  - templates.weave.works
-  verbs:
-  - update
 - apiGroups:
   - templates.weave.works
   resources:

@@ -22,8 +22,6 @@ import (
 )
 
 type SourceDeploymentReference struct {
-	// Namespace of the referent.
-	Namespace string `json:"namespace,omitempty"`
 	// Name of the referent.
 	Name string `json:"name"`
 }

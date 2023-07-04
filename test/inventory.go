@@ -17,6 +17,7 @@ func AssertInventoryHasItems(t *testing.T, shardset *templatesv1.FluxShardSet, o
 	if l := len(shardset.Status.Inventory.Entries); l != len(objs) {
 		t.Errorf("expected %d items, got %v", len(objs), l)
 	}
+
 	entries := []templatesv1.ResourceRef{}
 	for _, obj := range objs {
 		ref, err := templatesv1.ResourceRefFromObject(obj)
