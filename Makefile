@@ -1,8 +1,14 @@
 
+VERSION ?= $(shell git describe --tags --always)
+# Strip off leading `v`: v0.12.0 -> 0.12.0
+# Seems to be idiomatic for chart versions: https://helm.sh/docs/topics/charts/#the-chart-file
+CHART_VERSION := $(shell echo $(VERSION) | sed 's/^v//')
+
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG ?= ghcr.io/weaveworks/flux-shard-controller:${VERSION}
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
-ENVTEST_K8S_VERSION = 1.26.1
+GEN_API_REF_DOCS_VERSION ?= e327d0730470cbd61b06300f81c5fcf91c23c113
+CHART_REGISTRY ?= ghcr.io/weaveworks/charts
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -62,18 +68,21 @@ test: manifests generate fmt vet envtest ## Run tests.
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build -o bin/manager -ldflags "-X main.Version=${VERSION}" main.go version.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go
+
+version:
+	@echo $(VERSION)
 
 # If you wish built the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64 ). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: test ## Build docker image with the manager.
-	docker build -t ${IMG} .
+	docker build -t ${IMG} --build-arg VERSION=${VERSION} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
@@ -160,3 +169,49 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 envtest: $(ENVTEST) ## Download envtest-setup locally if necessary.
 $(ENVTEST): $(LOCALBIN)
 	test -s $(LOCALBIN)/setup-envtest || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
+
+HELMIFY = $(LOCALBIN)/helmify
+.PHONY: helmify
+helmify:
+	$(call go-get-tool,$(HELMIFY),github.com/arttor/helmify/cmd/helmify@v0.4.3)
+
+.PHONY: helm-chart
+helm-chart: manifests kustomize helmify
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	$(KUSTOMIZE) build config/default | $(HELMIFY) -crd-dir charts/flux-shard-controller
+	echo "fullnameOverride: flux-shard" >> charts/flux-shard-controller/values.yaml
+	cp LICENSE charts/flux-shard-controller/LICENSE
+	helm lint charts/flux-shard-controller
+	helm package charts/flux-shard-controller --app-version $(VERSION) --version $(CHART_VERSION) --destination /tmp/helm-repo
+
+publish-helm-chart: helm-chart
+	helm push /tmp/helm-repo/flux-shard-controller-${CHART_VERSION}.tgz oci://${CHART_REGISTRY}
+
+# Find or download gen-crd-api-reference-docs
+GEN_CRD_API_REFERENCE_DOCS = $(LOCALBIN)/gen-crd-api-reference-docs
+.PHONY: gen-crd-api-reference-docs
+gen-crd-api-reference-docs: ## Download gen-crd-api-reference-docs locally if necessary
+	$(call go-get-tool,$(GEN_CRD_API_REFERENCE_DOCS),github.com/ahmetb/gen-crd-api-reference-docs@$(GEN_API_REF_DOCS_VERSION))
+
+api-docs: gen-crd-api-reference-docs  ## Generate API reference documentation
+	$(GEN_CRD_API_REFERENCE_DOCS) -api-dir=./api/v1alpha1 -config=./hack/api-docs/config.json -template-dir=./hack/api-docs/template -out-file=./docs/api/fluxshardset.md
+	@sed -i '' -e 's/<namespace><em><name><\/em><group>_<kind>/namespace_name_group_kind/g' docs/api/fluxshardset.md
+
+user-guide: api-docs
+	cp ./docs/README.md ../weave-gitops/website/docs/flux-shard-controller/guide.mdx
+	cp ./docs/api/fluxshardset.md ../weave-gitops/website/docs/flux-shard-controller/_api.mdx
+	$(GEN_CRD_API_REFERENCE_DOCS) -api-dir=./api/v1alpha1 -config=./hack/api-docs/config.json -template-dir=./hack/api-docs/toc-template -out-file=../weave-gitops/website/docs/flux-shard-controller/_api-toc.json
+
+# go-get-tool will 'go get' any package $2 and install it to $1.
+PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
+define go-get-tool
+@[ -f $(1) ] || { \
+set -e ;\
+TMP_DIR=$$(mktemp -d) ;\
+cd $$TMP_DIR ;\
+go mod init tmp ;\
+echo "Downloading $(2)" ;\
+GOBIN=$(PROJECT_DIR)/bin go install $(2) ;\
+rm -rf $$TMP_DIR ;\
+}
+endef
