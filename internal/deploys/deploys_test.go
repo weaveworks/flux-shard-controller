@@ -9,14 +9,14 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/utils/pointer"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	shardv1 "github.com/weaveworks/flux-shard-controller/api/v1alpha1"
 	"github.com/weaveworks/flux-shard-controller/test"
 )
 
-const testControllerName = "kustomize-controller"
+const testControllerName = "source-controller"
 
 func TestNewDeploymentFromDeployment(t *testing.T) {
 	depl := loadDeploymentFixture(t, "testdata/kustomize-controller.yaml")
@@ -34,7 +34,8 @@ func TestGenerateDeployments(t *testing.T) {
 		name         string
 		fluxShardSet *shardv1.FluxShardSet
 		src          *appsv1.Deployment
-		wantDeps     []*appsv1.Deployment
+		svc          *corev1.Service
+		wantObjs     []client.Object
 	}{
 		{
 			name: "generate when no shards are defined",
@@ -46,12 +47,12 @@ func TestGenerateDeployments(t *testing.T) {
 					Shards: []shardv1.ShardSpec{},
 				},
 			},
-			src: newTestDeployment(func(d *appsv1.Deployment) {
+			src: test.NewDeployment(testControllerName, func(d *appsv1.Deployment) {
 				d.Spec.Template.Spec.Containers[0].Args = []string{
 					"--watch-label-selector=!sharding.fluxcd.io/key",
 				}
 			}),
-			wantDeps: []*appsv1.Deployment{},
+			wantObjs: []client.Object{},
 		},
 		{
 			name: "generation when one shard is defined",
@@ -70,42 +71,117 @@ func TestGenerateDeployments(t *testing.T) {
 					},
 				},
 			},
-			src: newTestDeployment(func(d *appsv1.Deployment) {
-				d.ObjectMeta.Name = "kustomize-controller"
+			src: test.NewDeployment(testControllerName, func(d *appsv1.Deployment) {
+				d.Spec.Template.Spec.Containers[0].Args = []string{
+					"--watch-label-selector=!sharding.fluxcd.io/key",
+					"--storage-adv-addr=source-controller.$(RUNTIME_NAMESPACE).svc.cluster.local.",
+				}
+			}),
+			svc: test.NewService("source-controller", func(svc *corev1.Service) {
+				svc.Spec.Selector = map[string]string{
+					"app": "source-controller",
+				}
+			}),
+			wantObjs: []client.Object{
+				test.NewDeployment(
+					"source-controller-shard-1",
+					func(d *appsv1.Deployment) {
+						d.ObjectMeta.Labels = map[string]string{
+							"sharding.fluxcd.io/role":         "shard",
+							"app.kubernetes.io/managed-by":    "flux-shard-controller",
+							"templates.weave.works/shard":     "shard-1",
+							"templates.weave.works/shard-set": "test-shard-set",
+						}
+						d.Spec.Template.Spec.Containers[0].Args = []string{
+							"--watch-label-selector=sharding.fluxcd.io/key in (shard-1)",
+							"--storage-adv-addr=source-controller-shard-1.$(RUNTIME_NAMESPACE).svc.cluster.local.",
+						}
+						d.Spec.Selector = &metav1.LabelSelector{
+							MatchLabels: map[string]string{
+								"sharding.fluxcd.io/role":         "shard",
+								"app":                             "source-controller",
+								"app.kubernetes.io/managed-by":    "flux-shard-controller",
+								"templates.weave.works/shard-set": "test-shard-set",
+								"templates.weave.works/shard":     "shard-1",
+							},
+						}
+						d.Spec.Template.ObjectMeta.Labels = map[string]string{
+							"sharding.fluxcd.io/role":         "shard",
+							"app":                             "source-controller",
+							"app.kubernetes.io/managed-by":    "flux-shard-controller",
+							"templates.weave.works/shard-set": "test-shard-set",
+							"templates.weave.works/shard":     "shard-1",
+						}
+					}),
+				test.NewService("source-controller-shard-1", func(svc *corev1.Service) {
+					svc.ObjectMeta.Labels = map[string]string{
+						"sharding.fluxcd.io/role":         "shard",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+						"templates.weave.works/shard-set": "test-shard-set",
+						"templates.weave.works/shard":     "shard-1",
+					}
+					svc.Spec.Selector = map[string]string{
+						"app":                             "source-controller",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+						"sharding.fluxcd.io/role":         "shard",
+						"templates.weave.works/shard":     "shard-1",
+						"templates.weave.works/shard-set": "test-shard-set",
+					}
+				}),
+			},
+		},
+		{
+			name: "generation when source controller has no service",
+			fluxShardSet: &shardv1.FluxShardSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-shard-set",
+				},
+				Spec: shardv1.FluxShardSetSpec{
+					SourceDeploymentRef: shardv1.SourceDeploymentReference{
+						Name: testControllerName,
+					},
+					Shards: []shardv1.ShardSpec{
+						{
+							Name: "shard-1",
+						},
+					},
+				},
+			},
+			src: test.NewDeployment(testControllerName, func(d *appsv1.Deployment) {
 				d.Spec.Template.Spec.Containers[0].Args = []string{
 					"--watch-label-selector=!sharding.fluxcd.io/key",
 				}
 			}),
-			wantDeps: []*appsv1.Deployment{
-				newTestDeployment(func(d *appsv1.Deployment) {
-					d.Annotations = map[string]string{}
-					d.ObjectMeta.Labels = map[string]string{
-						"sharding.fluxcd.io/role":         "shard",
-						"app.kubernetes.io/managed-by":    "flux-shard-controller",
-						"templates.weave.works/shard":     "shard-1",
-						"templates.weave.works/shard-set": "test-shard-set",
-					}
-					d.ObjectMeta.Name = "kustomize-controller-shard-1"
-					d.Spec.Template.Spec.Containers[0].Args = []string{
-						"--watch-label-selector=sharding.fluxcd.io/key in (shard-1)",
-					}
-					d.Spec.Selector = &metav1.LabelSelector{
-						MatchLabels: map[string]string{
+			wantObjs: []client.Object{
+				test.NewDeployment(
+					"source-controller-shard-1",
+					func(d *appsv1.Deployment) {
+						d.ObjectMeta.Labels = map[string]string{
 							"sharding.fluxcd.io/role":         "shard",
-							"app":                             "kustomize-controller",
+							"app.kubernetes.io/managed-by":    "flux-shard-controller",
+							"templates.weave.works/shard":     "shard-1",
+							"templates.weave.works/shard-set": "test-shard-set",
+						}
+						d.Spec.Template.Spec.Containers[0].Args = []string{
+							"--watch-label-selector=sharding.fluxcd.io/key in (shard-1)",
+						}
+						d.Spec.Selector = &metav1.LabelSelector{
+							MatchLabels: map[string]string{
+								"sharding.fluxcd.io/role":         "shard",
+								"app":                             "source-controller",
+								"app.kubernetes.io/managed-by":    "flux-shard-controller",
+								"templates.weave.works/shard-set": "test-shard-set",
+								"templates.weave.works/shard":     "shard-1",
+							},
+						}
+						d.Spec.Template.ObjectMeta.Labels = map[string]string{
+							"sharding.fluxcd.io/role":         "shard",
+							"app":                             "source-controller",
 							"app.kubernetes.io/managed-by":    "flux-shard-controller",
 							"templates.weave.works/shard-set": "test-shard-set",
 							"templates.weave.works/shard":     "shard-1",
-						},
-					}
-					d.Spec.Template.ObjectMeta.Labels = map[string]string{
-						"sharding.fluxcd.io/role":         "shard",
-						"app":                             "kustomize-controller",
-						"app.kubernetes.io/managed-by":    "flux-shard-controller",
-						"templates.weave.works/shard-set": "test-shard-set",
-						"templates.weave.works/shard":     "shard-1",
-					}
-				}),
+						}
+					}),
 			},
 		},
 		{
@@ -128,43 +204,77 @@ func TestGenerateDeployments(t *testing.T) {
 					},
 				},
 			},
-			src: newTestDeployment(func(d *appsv1.Deployment) {
+			src: test.NewDeployment(testControllerName, func(d *appsv1.Deployment) {
 				d.Spec.Template.Spec.Containers[0].Args = []string{
 					"--watch-label-selector=!sharding.fluxcd.io/key",
 				}
 			}),
-			wantDeps: []*appsv1.Deployment{
-				newTestDeployment(func(d *appsv1.Deployment) {
-					d.Annotations = map[string]string{}
+			svc: test.NewService("source-controller", func(svc *corev1.Service) {
+				svc.ObjectMeta.Labels = map[string]string{}
+				svc.Spec.Selector = map[string]string{
+					"app":                          "source-controller",
+					"app.kubernetes.io/managed-by": "flux-shard-controller",
+				}
+			}),
+			wantObjs: []client.Object{
+				test.NewDeployment("source-controller-shard-a", func(d *appsv1.Deployment) {
 					d.ObjectMeta.Labels = test.ShardLabels("shard-a")
-					d.ObjectMeta.Name = "kustomize-controller-shard-a"
 					d.Spec.Template.Spec.Containers[0].Args = []string{
 						"--watch-label-selector=sharding.fluxcd.io/key in (shard-a)",
 					}
 					d.Spec.Selector = &metav1.LabelSelector{
 						MatchLabels: test.ShardLabels("shard-a", map[string]string{
-							"app": "kustomize-controller",
+							"app": "source-controller",
 						}),
 					}
 					d.Spec.Template.ObjectMeta.Labels = test.ShardLabels("shard-a", map[string]string{
-						"app": "kustomize-controller",
+						"app": "source-controller",
 					})
 				}),
-				newTestDeployment(func(d *appsv1.Deployment) {
-					d.Annotations = map[string]string{}
+				test.NewService("source-controller-shard-a", func(svc *corev1.Service) {
+					svc.ObjectMeta.Labels = map[string]string{
+						"sharding.fluxcd.io/role":         "shard",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+						"templates.weave.works/shard-set": "test-shard-set",
+						"templates.weave.works/shard":     "shard-a",
+					}
+					svc.Spec.Selector = map[string]string{
+						"app":                             "source-controller",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+						"sharding.fluxcd.io/role":         "shard",
+						"templates.weave.works/shard":     "shard-a",
+						"templates.weave.works/shard-set": "test-shard-set",
+					}
+				}),
+				test.NewDeployment("source-controller-shard-b", func(d *appsv1.Deployment) {
 					d.ObjectMeta.Labels = test.ShardLabels("shard-b")
-					d.ObjectMeta.Name = "kustomize-controller-shard-b"
+					d.ObjectMeta.Name = "source-controller-shard-b"
 					d.Spec.Template.Spec.Containers[0].Args = []string{
 						"--watch-label-selector=sharding.fluxcd.io/key in (shard-b)",
 					}
 					d.Spec.Selector = &metav1.LabelSelector{
 						MatchLabels: test.ShardLabels("shard-b", map[string]string{
-							"app": "kustomize-controller",
+							"app": "source-controller",
 						}),
 					}
 					d.Spec.Template.ObjectMeta.Labels = test.ShardLabels("shard-b", map[string]string{
-						"app": "kustomize-controller",
+						"app": "source-controller",
 					})
+				}),
+				test.NewService("source-controller-shard-b", func(svc *corev1.Service) {
+					svc.ObjectMeta.Labels = map[string]string{
+						"sharding.fluxcd.io/role":         "shard",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+						"templates.weave.works/shard-set": "test-shard-set",
+						"templates.weave.works/shard":     "shard-b",
+					}
+					svc.Spec.Selector = map[string]string{
+						"app":                             "source-controller",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+						"sharding.fluxcd.io/role":         "shard",
+						"templates.weave.works/shard":     "shard-b",
+						"templates.weave.works/shard-set": "test-shard-set",
+					}
 				}),
 			},
 		},
@@ -185,29 +295,52 @@ func TestGenerateDeployments(t *testing.T) {
 					},
 				},
 			},
-			src: newTestDeployment(func(d *appsv1.Deployment) {
-				d.Spec.Template.Spec.Containers[0].Args = []string{
-					"--watch-all-namespaces=true",
-					"--watch-label-selector=!sharding.fluxcd.io/key",
-				}
-			}),
-			wantDeps: []*appsv1.Deployment{
-				newTestDeployment(func(d *appsv1.Deployment) {
-					d.Annotations = map[string]string{}
-					d.ObjectMeta.Labels = test.ShardLabels("shard-1")
-					d.ObjectMeta.Name = "kustomize-controller-shard-1"
+			src: test.NewDeployment(
+				testControllerName,
+				func(d *appsv1.Deployment) {
 					d.Spec.Template.Spec.Containers[0].Args = []string{
 						"--watch-all-namespaces=true",
-						"--watch-label-selector=sharding.fluxcd.io/key in (shard-1)",
+						"--watch-label-selector=!sharding.fluxcd.io/key",
 					}
-					d.Spec.Selector = &metav1.LabelSelector{
-						MatchLabels: test.ShardLabels("shard-1", map[string]string{
-							"app": "kustomize-controller",
-						}),
+				}),
+			svc: test.NewService("source-controller", func(svc *corev1.Service) {
+				svc.ObjectMeta.Labels = map[string]string{}
+				svc.Spec.Selector = map[string]string{
+					"app": "source-controller",
+				}
+			}),
+			wantObjs: []client.Object{
+				test.NewDeployment(
+					"source-controller-shard-1",
+					func(d *appsv1.Deployment) {
+						d.ObjectMeta.Labels = test.ShardLabels("shard-1")
+						d.Spec.Template.Spec.Containers[0].Args = []string{
+							"--watch-all-namespaces=true",
+							"--watch-label-selector=sharding.fluxcd.io/key in (shard-1)",
+						}
+						d.Spec.Selector = &metav1.LabelSelector{
+							MatchLabels: test.ShardLabels("shard-1", map[string]string{
+								"app": "source-controller",
+							}),
+						}
+						d.Spec.Template.ObjectMeta.Labels = test.ShardLabels("shard-1", map[string]string{
+							"app": "source-controller",
+						})
+					}),
+				test.NewService("source-controller-shard-1", func(svc *corev1.Service) {
+					svc.ObjectMeta.Labels = map[string]string{
+						"sharding.fluxcd.io/role":         "shard",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+						"templates.weave.works/shard-set": "test-shard-set",
+						"templates.weave.works/shard":     "shard-1",
 					}
-					d.Spec.Template.ObjectMeta.Labels = test.ShardLabels("shard-1", map[string]string{
-						"app": "kustomize-controller",
-					})
+					svc.Spec.Selector = map[string]string{
+						"app":                             "source-controller",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+						"sharding.fluxcd.io/role":         "shard",
+						"templates.weave.works/shard":     "shard-1",
+						"templates.weave.works/shard-set": "test-shard-set",
+					}
 				}),
 			},
 		},
@@ -228,34 +361,57 @@ func TestGenerateDeployments(t *testing.T) {
 					},
 				},
 			},
-			src: newTestDeployment(func(d *appsv1.Deployment) {
-				d.ObjectMeta.Name = "kustomize-controller"
-				d.Spec.Template.Spec.Containers[0].Args = []string{
-					"--watch-label-selector=!sharding.fluxcd.io/key",
-				}
-				d.Annotations = map[string]string{
-					"test-annot":                        "test",
-					"deployment.kubernetes.io/revision": "test",
+			src: test.NewDeployment(
+				"source-controller",
+				func(d *appsv1.Deployment) {
+					d.Spec.Template.Spec.Containers[0].Args = []string{
+						"--watch-label-selector=!sharding.fluxcd.io/key",
+					}
+					d.Annotations = map[string]string{
+						"test-annot":                        "test",
+						"deployment.kubernetes.io/revision": "test",
+					}
+				}),
+			svc: test.NewService("source-controller", func(svc *corev1.Service) {
+				svc.ObjectMeta.Labels = map[string]string{}
+				svc.Spec.Selector = map[string]string{
+					"app": "source-controller",
 				}
 			}),
-			wantDeps: []*appsv1.Deployment{
-				newTestDeployment(func(d *appsv1.Deployment) {
-					d.Annotations = map[string]string{
-						"test-annot": "test",
+			wantObjs: []client.Object{
+				test.NewDeployment(
+					"source-controller-shard-1",
+					func(d *appsv1.Deployment) {
+						d.Annotations = map[string]string{
+							"test-annot": "test",
+						}
+						d.ObjectMeta.Labels = test.ShardLabels("shard-1")
+						d.Spec.Template.Spec.Containers[0].Args = []string{
+							"--watch-label-selector=sharding.fluxcd.io/key in (shard-1)",
+						}
+						d.Spec.Selector = &metav1.LabelSelector{
+							MatchLabels: test.ShardLabels("shard-1", map[string]string{
+								"app": "source-controller",
+							}),
+						}
+						d.Spec.Template.ObjectMeta.Labels = test.ShardLabels("shard-1", map[string]string{
+							"app": "source-controller",
+						})
+					}),
+				test.NewService("source-controller-shard-1", func(svc *corev1.Service) {
+					svc.ObjectMeta.Labels = map[string]string{
+						"sharding.fluxcd.io/role":         "shard",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+						"templates.weave.works/shard-set": "test-shard-set",
+						"templates.weave.works/shard":     "shard-1",
 					}
-					d.ObjectMeta.Labels = test.ShardLabels("shard-1")
-					d.ObjectMeta.Name = "kustomize-controller-shard-1"
-					d.Spec.Template.Spec.Containers[0].Args = []string{
-						"--watch-label-selector=sharding.fluxcd.io/key in (shard-1)",
+					svc.Spec.Selector = map[string]string{
+						"app":                             "source-controller",
+						"app.kubernetes.io/managed-by":    "flux-shard-controller",
+						"sharding.fluxcd.io/role":         "shard",
+						"templates.weave.works/shard":     "shard-1",
+						"templates.weave.works/shard-set": "test-shard-set",
 					}
-					d.Spec.Selector = &metav1.LabelSelector{
-						MatchLabels: test.ShardLabels("shard-1", map[string]string{
-							"app": "kustomize-controller",
-						}),
-					}
-					d.Spec.Template.ObjectMeta.Labels = test.ShardLabels("shard-1", map[string]string{
-						"app": "kustomize-controller",
-					})
 				}),
 			},
 		},
@@ -263,12 +419,12 @@ func TestGenerateDeployments(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			generatedDeps, err := GenerateDeployments(tt.fluxShardSet, tt.src)
+			generatedDeps, err := GenerateDeployments(tt.fluxShardSet, tt.src, tt.svc)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			if diff := cmp.Diff(tt.wantDeps, generatedDeps); diff != "" {
+			if diff := cmp.Diff(tt.wantObjs, generatedDeps); diff != "" {
 				t.Fatalf("generated deployments dont match wanted: \n%s", diff)
 			}
 		})
@@ -286,68 +442,20 @@ func TestGenerateDeployments_errors(t *testing.T) {
 		{
 			// The deployment does not have --watch-label-selector=
 			name:    "deployment does not have sharding args",
-			src:     newTestDeployment(),
-			wantErr: "deployment flux-system/kustomize-controller is not configured to ignore sharding",
+			src:     test.NewDeployment("source-controller"),
+			wantErr: "deployment flux-system/source-controller is not configured to ignore sharding",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := GenerateDeployments(tt.fluxShardSet, tt.src)
+			_, err := GenerateDeployments(tt.fluxShardSet, tt.src, nil)
 
 			if msg := err.Error(); msg != tt.wantErr {
 				t.Fatalf("wanted error %q, got %q", tt.wantErr, msg)
 			}
 		})
 	}
-}
-
-func newTestDeployment(opts ...func(*appsv1.Deployment)) *appsv1.Deployment {
-	deploy := &appsv1.Deployment{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "Deployment",
-			APIVersion: "apps/v1",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      testControllerName,
-			Namespace: "flux-system",
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: pointer.Int32(1),
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					"app": "kustomize-controller",
-				},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"app": "kustomize-controller",
-					},
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name: "manager",
-							Args: []string{
-								"--log-level=info",
-								"--log-encoding=json",
-								"--enable-leader-election",
-							},
-							Image: "ghcr.io/fluxcd/kustomize-controller:v0.35.1",
-						},
-					},
-					ServiceAccountName: "kustomize-controller",
-				},
-			},
-		},
-	}
-
-	for _, opt := range opts {
-		opt(deploy)
-	}
-
-	return deploy
 }
 
 // This test is a test of the LabelSelector mechanism and could be removed.

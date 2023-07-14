@@ -12,7 +12,7 @@ func NewFluxShardSet(opts ...func(*templatesv1.FluxShardSet)) *templatesv1.FluxS
 	fluxshardset := &templatesv1.FluxShardSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-shard-set",
-			Namespace: "default",
+			Namespace: DefaultNamespace,
 		},
 		Spec: templatesv1.FluxShardSetSpec{},
 	}

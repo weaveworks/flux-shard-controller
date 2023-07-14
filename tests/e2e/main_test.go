@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/fluxcd/pkg/runtime/testenv"
 	templatesv1 "github.com/weaveworks/flux-shard-controller/api/v1alpha1"
+	"github.com/weaveworks/flux-shard-controller/test"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes/scheme"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -32,6 +34,10 @@ func TestMain(m *testing.M) {
 	testEnv = testenv.New(testenv.WithCRDPath(
 		filepath.Join("..", "..", "config", "crd", "bases"),
 	))
+
+	if err := testEnv.Create(context.TODO(), test.NewNamespace("flux-system")); err != nil {
+		panic(fmt.Sprintf("failed to create namespace flux-system: %s", err))
+	}
 
 	if err := (&controller.FluxShardSetReconciler{
 		Client: testEnv,

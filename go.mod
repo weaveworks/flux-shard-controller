@@ -3,6 +3,7 @@ module github.com/weaveworks/flux-shard-controller
 go 1.19
 
 require (
+	dario.cat/mergo v1.0.0
 	github.com/fluxcd/pkg/apis/meta v1.1.0
 	github.com/fluxcd/pkg/runtime v0.38.1
 	github.com/gitops-tools/pkg v0.1.0
