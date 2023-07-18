@@ -189,21 +189,6 @@ helm-chart: manifests kustomize helmify
 publish-helm-chart: helm-chart
 	helm push /tmp/helm-repo/flux-shard-controller-${CHART_VERSION}.tgz oci://${CHART_REGISTRY}
 
-# Find or download gen-crd-api-reference-docs
-GEN_CRD_API_REFERENCE_DOCS = $(LOCALBIN)/gen-crd-api-reference-docs
-.PHONY: gen-crd-api-reference-docs
-gen-crd-api-reference-docs: ## Download gen-crd-api-reference-docs locally if necessary
-	$(call go-get-tool,$(GEN_CRD_API_REFERENCE_DOCS),github.com/ahmetb/gen-crd-api-reference-docs@$(GEN_API_REF_DOCS_VERSION))
-
-api-docs: gen-crd-api-reference-docs  ## Generate API reference documentation
-	$(GEN_CRD_API_REFERENCE_DOCS) -api-dir=./api/v1alpha1 -config=./hack/api-docs/config.json -template-dir=./hack/api-docs/template -out-file=./docs/api/fluxshardset.md
-	@sed -i '' -e 's/<namespace><em><name><\/em><group>_<kind>/namespace_name_group_kind/g' docs/api/fluxshardset.md
-
-user-guide: api-docs
-	cp ./docs/README.md ../weave-gitops/website/docs/flux-shard-controller/guide.mdx
-	cp ./docs/api/fluxshardset.md ../weave-gitops/website/docs/flux-shard-controller/_api.mdx
-	$(GEN_CRD_API_REFERENCE_DOCS) -api-dir=./api/v1alpha1 -config=./hack/api-docs/config.json -template-dir=./hack/api-docs/toc-template -out-file=../weave-gitops/website/docs/flux-shard-controller/_api-toc.json
-
 # go-get-tool will 'go get' any package $2 and install it to $1.
 PROJECT_DIR := $(shell dirname $(abspath $(lastword $(MAKEFILE_LIST))))
 define go-get-tool
