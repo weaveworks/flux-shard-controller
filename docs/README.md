@@ -24,8 +24,8 @@ Add `clusters/my-cluster/flux-system/kustomization.yaml` file to configure the m
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-- gotk-components.yaml
-- gotk-sync.yaml
+  - gotk-components.yaml
+  - gotk-sync.yaml
 patches:
   - target:
       kind: Deployment
@@ -80,7 +80,41 @@ source-controller["--watch-label-selector=!sharding.fluxcd.io/key","--events-add
 
 ## Install the Shard Controller
 
-**TODO**
+The Shard controller is distributed as a Helm chart, you can install it with the follow `HelmRepository` and `HelmRelease`.
+
+Save the following YAML to a file and either apply it with `kubectl apply -f <file>` or commit it to your Git repository path that is reconciled in the cluster.
+
+```yaml
+apiVersion: source.toolkit.fluxcd.io/v1beta2
+kind: HelmRepository
+metadata:
+  name: weaveworks-charts
+  namespace: flux-system
+spec:
+  interval: 1m
+  type: oci
+  url: oci://ghcr.io/weaveworks/charts
+---
+apiVersion: helm.toolkit.fluxcd.io/v2beta1
+kind: HelmRelease
+metadata:
+  name: flux-shard-controller
+  namespace: flux-system
+spec:
+  interval: 10m
+  chart:
+    spec:
+      chart: flux-shard-controller
+      sourceRef:
+        kind: HelmRepository
+        name: weaveworks-charts
+        namespace: flux-system
+      version: 0.2.0
+  install:
+    crds: CreateReplace
+  upgrade:
+    crds: CreateReplace
+```
 
 ## Create a non-sharded GitRepository
 
