@@ -2,6 +2,7 @@ package tests
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"sort"
 	"testing"
@@ -11,11 +12,12 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/cli-utils/pkg/object"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -27,18 +29,24 @@ var ignoreObjectMeta = cmpopts.IgnoreFields(metav1.ObjectMeta{}, "UID", "OwnerRe
 
 func TestCreatingDeployments(t *testing.T) {
 	ctx := context.TODO()
-	srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
+	srcDeployment := test.NewDeployment("kustomize-controller", func(d *appsv1.Deployment) {
 		d.Spec.Template.Spec.Containers[0].Args = []string{
 			"--watch-label-selector=!sharding.fluxcd.io/key",
 		}
 	})
 	test.AssertNoError(t, testEnv.Create(ctx, srcDeployment))
-	defer func() {
-		test.AssertNoError(t, testEnv.Get(ctx, client.ObjectKeyFromObject(srcDeployment), srcDeployment))
-		deleteObject(t, testEnv, srcDeployment)
-	}()
+	defer deleteObject(t, testEnv, srcDeployment)
+
+	srcService := test.NewService("kustomize-controller", func(svc *corev1.Service) {
+		svc.Spec.Selector = map[string]string{
+			"app": "kustomize-controller",
+		}
+	})
+	test.AssertNoError(t, testEnv.Create(ctx, srcService))
+	defer deleteObject(t, testEnv, srcService)
 
 	shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
+		set.ObjectMeta.Namespace = srcDeployment.GetNamespace()
 		set.Spec.Shards = []templatesv1.ShardSpec{
 			{
 				Name: "shard-1",
@@ -50,10 +58,11 @@ func TestCreatingDeployments(t *testing.T) {
 	})
 
 	test.AssertNoError(t, testEnv.Create(ctx, shardSet))
-	defer deleteShardSetAndWaitForNotFound(t, testEnv, shardSet)
+	defer deleteFluxShardSetAndWaitForNotFound(t, testEnv, shardSet)
 
-	waitForFluxShardSetCondition(t, testEnv, shardSet, `1 shard\(s\) created`)
-	want := test.MakeTestDeployment(nsn(srcDeployment.GetNamespace(), "kustomize-controller-shard-1"), func(d *appsv1.Deployment) {
+	waitForFluxShardSetCondition(t, testEnv, shardSet, "2 resources created")
+	want := test.NewDeployment("kustomize-controller-shard-1", func(d *appsv1.Deployment) {
+		d.ObjectMeta.Namespace = srcDeployment.GetNamespace()
 		d.ObjectMeta.Labels = test.ShardLabels("shard-1")
 		d.Spec.Selector = &metav1.LabelSelector{
 			MatchLabels: test.ShardLabels("shard-1", map[string]string{
@@ -77,17 +86,18 @@ func TestCreatingDeployments(t *testing.T) {
 
 func TestUpdatingDeployments(t *testing.T) {
 	ctx := context.TODO()
-	srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
+	srcDeployment := test.NewDeployment("kustomize-controller", func(d *appsv1.Deployment) {
 		d.Spec.Template.Spec.Containers[0].Args = []string{
 			"--watch-label-selector=!sharding.fluxcd.io/key",
 		}
 		d.Spec.Template.Spec.Containers[0].Image = "ghcr.io/fluxcd/kustomize-controller:v0.35.0"
 	})
 	test.AssertNoError(t, testEnv.Create(ctx, srcDeployment))
-	defer func() {
-		test.AssertNoError(t, testEnv.Get(ctx, client.ObjectKeyFromObject(srcDeployment), srcDeployment))
-		deleteObject(t, testEnv, srcDeployment)
-	}()
+	defer deleteObject(t, testEnv, srcDeployment)
+
+	srcService := test.NewService("kustomize-controller")
+	test.AssertNoError(t, testEnv.Create(ctx, srcService))
+	defer deleteObject(t, testEnv, srcService)
 
 	shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
 		set.Spec.Shards = []templatesv1.ShardSpec{
@@ -101,9 +111,9 @@ func TestUpdatingDeployments(t *testing.T) {
 	})
 
 	test.AssertNoError(t, testEnv.Create(ctx, shardSet))
-	defer deleteShardSetAndWaitForNotFound(t, testEnv, shardSet)
-	waitForFluxShardSetCondition(t, testEnv, shardSet, `1 shard\(s\) created`)
-	waitForFluxShardSetInventory(t, testEnv, shardSet, test.MakeTestDeployment(nsn("default", "kustomize-controller-shard-1")))
+	defer deleteFluxShardSetAndWaitForNotFound(t, testEnv, shardSet)
+	waitForFluxShardSetCondition(t, testEnv, shardSet, `2 resources created`)
+	waitForFluxShardSetInventory(t, testEnv, shardSet, test.NewDeployment("kustomize-controller-shard-1"), test.NewService("kustomize-controller-shard-1"))
 
 	test.AssertNoError(t, testEnv.Get(ctx, client.ObjectKeyFromObject(srcDeployment), srcDeployment))
 	srcDeployment.Spec.Template.Spec.Containers[0].Image = "ghcr.io/fluxcd/kustomize-controller:v0.35.2"
@@ -111,7 +121,7 @@ func TestUpdatingDeployments(t *testing.T) {
 
 	test.AssertNoError(t, testEnv.Get(ctx, client.ObjectKeyFromObject(srcDeployment), srcDeployment))
 
-	shard1Deploy := test.MakeTestDeployment(nsn("default", "kustomize-controller-shard-1"), func(d *appsv1.Deployment) {
+	shard1Deploy := test.NewDeployment("kustomize-controller-shard-1", func(d *appsv1.Deployment) {
 		d.ObjectMeta.Labels = test.ShardLabels("shard-1")
 		d.Spec.Template.ObjectMeta.Labels = test.ShardLabels("shard-1")
 		d.Spec.Template.Spec.Containers[0].Args = []string{
@@ -179,9 +189,9 @@ func waitForFluxShardSetCondition(t *testing.T, k8sClient client.Client, set *te
 			t.Fatal(err)
 		}
 
-		if !match {
-			t.Logf("failed to match %q to %q", message, cond.Message)
-		}
+		// if !match {
+		// 	t.Logf("failed to match %q to %q", message, cond.Message)
+		// }
 		return match
 	}, timeout).Should(gomega.BeTrue())
 }
@@ -210,30 +220,10 @@ func deleteObject(t *testing.T, cl client.Client, obj client.Object) {
 // Owned resources are not automatically deleted in the testenv setup.
 // This cleans the resources from the inventory, and then removes the Shard Set
 // and waits for it to be gone.
-func deleteShardSetAndWaitForNotFound(t *testing.T, cl client.Client, set *templatesv1.FluxShardSet) {
+func deleteFluxShardSetAndWaitForNotFound(t *testing.T, cl client.Client, set *templatesv1.FluxShardSet) {
 	t.Helper()
 	ctx := context.TODO()
-	test.AssertNoError(t, cl.Get(ctx, client.ObjectKeyFromObject(set), set))
-
-	if set.Status.Inventory != nil {
-		for _, v := range set.Status.Inventory.Entries {
-			t.Logf("deleting %s", v.ID)
-			objMeta, err := object.ParseObjMetadata(v.ID)
-			if err != nil {
-				t.Logf("failed to delete resource: %s", v.ID)
-				t.Errorf("failed to delete resource ref %s when cleaning up", v.ID)
-				continue
-			}
-			var deploy appsv1.Deployment
-			test.AssertNoError(t, cl.Get(ctx, client.ObjectKey{Name: objMeta.Name, Namespace: objMeta.Namespace}, &deploy))
-
-			if err := cl.Delete(ctx, &deploy); err != nil {
-				t.Errorf("failed to delete deployment %+v when cleaning up", deploy.ObjectMeta)
-			}
-		}
-	}
-
-	deleteObject(t, cl, set)
+	test.DeleteFluxShardSet(t, cl, set)
 
 	g := gomega.NewWithT(t)
 	g.Eventually(func() bool {
@@ -253,9 +243,15 @@ func deleteShardSetAndWaitForNotFound(t *testing.T, cl client.Client, set *templ
 	}
 }
 
-func nsn(namespace, name string) client.ObjectKey {
-	return types.NamespacedName{
-		Name:      name,
-		Namespace: namespace,
+func unstructuredFromResourceRef(ref templatesv1.ResourceRef) (*unstructured.Unstructured, error) {
+	objMeta, err := object.ParseObjMetadata(ref.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse object ID %s: %w", ref.ID, err)
 	}
+	u := unstructured.Unstructured{}
+	u.SetGroupVersionKind(objMeta.GroupKind.WithVersion(ref.Version))
+	u.SetName(objMeta.Name)
+	u.SetNamespace(objMeta.Namespace)
+
+	return &u, nil
 }

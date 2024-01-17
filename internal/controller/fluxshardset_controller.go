@@ -19,7 +19,11 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 
+	"dario.cat/mergo"
+	"github.com/fluxcd/pkg/runtime/patch"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,6 +42,7 @@ import (
 	deploys "github.com/weaveworks/flux-shard-controller/internal/deploys"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 var accessor = meta.NewAccessor()
@@ -53,6 +58,7 @@ type FluxShardSetReconciler struct {
 // +kubebuilder:rbac:groups=templates.weave.works,resources=fluxshardsets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=templates.weave.works,resources=fluxshardsets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=services,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -89,7 +95,7 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	if inventory != nil {
 		templatesv1.SetReadyWithInventory(&shardSet, inventory, templatesv1.ReconciliationSucceededReason,
-			fmt.Sprintf("%d shard(s) created", len(inventory.Entries)))
+			fmt.Sprintf("%d resources created", len(inventory.Entries)))
 
 		if err := r.patchStatus(ctx, req, shardSet.Status); client.IgnoreNotFound(err) != nil {
 			templatesv1.SetFluxShardSetReadiness(&shardSet, metav1.ConditionFalse, templatesv1.ReconciliationFailedReason, err.Error())
@@ -104,7 +110,7 @@ func (r *FluxShardSetReconciler) Reconcile(ctx context.Context, req ctrl.Request
 func (r *FluxShardSetReconciler) removeResourceRefs(ctx context.Context, deletions []templatesv1.ResourceRef) error {
 	logger := log.FromContext(ctx)
 	for _, v := range deletions {
-		d, err := deploymentFromResourceRef(v)
+		d, err := unstructuredFromResourceRef(v)
 		if err != nil {
 			return err
 		}
@@ -143,7 +149,12 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, fluxSha
 		return nil, client.IgnoreNotFound(err)
 	}
 
-	generatedDeployments, err := deploys.GenerateDeployments(fluxShardSet, srcDeploy)
+	srcService, err := r.getSourceService(ctx, srcDeploy)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find Service for Deployment %s: %w", client.ObjectKeyFromObject(srcDeploy), err)
+	}
+
+	generatedResources, err := deploys.GenerateDeployments(fluxShardSet, srcDeploy, srcService)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate deployments: %w", err)
 	}
@@ -156,43 +167,49 @@ func (r *FluxShardSetReconciler) reconcileResources(ctx context.Context, fluxSha
 	// newInventory holds the resource refs for the generated resources.
 	newInventory := sets.New[templatesv1.ResourceRef]()
 
-	for _, newDeployment := range generatedDeployments {
-		ref, err := templatesv1.ResourceRefFromObject(newDeployment)
+	for _, newResource := range generatedResources {
+		ref, err := templatesv1.ResourceRefFromObject(newResource)
 		if err != nil {
 			return nil, fmt.Errorf("failed to update inventory: %w", err)
 		}
-
 		if existingInventory.Has(ref) {
 			newInventory.Insert(ref)
-			existing := &appsv1.Deployment{}
-			err = r.Client.Get(ctx, client.ObjectKeyFromObject(newDeployment), existing)
+			existing := runtimeObjectFromObject(newResource)
+			err = r.Client.Get(ctx, client.ObjectKeyFromObject(newResource), existing)
 			if err == nil {
-				newDeployment = copyDeploymentContent(existing, newDeployment)
-				if err := r.Client.Patch(ctx, newDeployment, client.MergeFrom(existing)); err != nil {
-					return nil, fmt.Errorf("failed to update Deployment: %w", err)
+				patchHelper, err := patch.NewHelper(existing, r.Client)
+				if err != nil {
+					return nil, err
+				}
+				if err := mergo.Merge(existing, newResource, mergo.WithOverride); err != nil {
+					return nil, err
 				}
 
-				if err := logResourceMessage(logger, "updated deployment", newDeployment); err != nil {
+				if err := patchHelper.Patch(ctx, existing); err != nil {
+					return nil, err
+				}
+
+				if err := logResourceMessage(logger, "updated resource", newResource); err != nil {
 					return nil, err
 				}
 				continue
 			}
 
 			if !apierrors.IsNotFound(err) {
-				return nil, fmt.Errorf("failed to load existing Deployment: %w", err)
+				return nil, fmt.Errorf("failed to load existing resource %s: %w", client.ObjectKeyFromObject(newResource), err)
 			}
 
 		}
 
-		if err := controllerutil.SetOwnerReference(fluxShardSet, newDeployment, r.Scheme); err != nil {
+		if err := controllerutil.SetOwnerReference(fluxShardSet, newResource, r.Scheme); err != nil {
 			return nil, fmt.Errorf("failed to set owner reference: %w", err)
 		}
 
-		if err := r.Client.Create(ctx, newDeployment); err != nil {
-			return nil, fmt.Errorf("failed to create Deployment: %w", err)
+		if err := r.Client.Create(ctx, newResource); err != nil {
+			return nil, fmt.Errorf("failed to create resource: %w", err)
 		}
 		newInventory.Insert(ref)
-		if err := logResourceMessage(logger, "created new deployment", newDeployment); err != nil {
+		if err := logResourceMessage(logger, "created new resource", newResource); err != nil {
 			return nil, err
 		}
 	}
@@ -228,6 +245,19 @@ func (r *FluxShardSetReconciler) getSourceDeployment(ctx context.Context, fluxSh
 	return srcDeploy, nil
 }
 
+func (r *FluxShardSetReconciler) getSourceService(ctx context.Context, deploy *appsv1.Deployment) (*corev1.Service, error) {
+	srcServiceKey := client.ObjectKey{
+		Name:      deploy.GetName(),
+		Namespace: deploy.GetNamespace(),
+	}
+	srcService := &corev1.Service{}
+	if err := r.Client.Get(ctx, srcServiceKey, srcService); err != nil {
+		return nil, client.IgnoreNotFound(err)
+	}
+
+	return srcService, nil
+}
+
 func (r *FluxShardSetReconciler) patchStatus(ctx context.Context, req ctrl.Request, newStatus templatesv1.FluxShardSetStatus) error {
 	var set templatesv1.FluxShardSet
 	if err := r.Client.Get(ctx, req.NamespacedName, &set); err != nil {
@@ -254,19 +284,6 @@ func (r *FluxShardSetReconciler) deploymentsToFluxShardSet(ctx context.Context, 
 	}
 
 	return result
-}
-
-func deploymentFromResourceRef(ref templatesv1.ResourceRef) (*appsv1.Deployment, error) {
-	objMeta, err := object.ParseObjMetadata(ref.ID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse object ID %s: %w", ref.ID, err)
-	}
-	d := appsv1.Deployment{}
-
-	d.Namespace = objMeta.Namespace
-	d.Name = objMeta.Name
-
-	return &d, nil
 }
 
 func logResourceMessage(logger logr.Logger, msg string, obj runtime.Object) error {
@@ -306,4 +323,21 @@ func indexDeployments(o client.Object) []string {
 	}
 
 	return []string{fmt.Sprintf("%s/%s", fss.GetNamespace(), fss.Spec.SourceDeploymentRef.Name)}
+}
+
+func runtimeObjectFromObject(o client.Object) client.Object {
+	return reflect.New(reflect.TypeOf(o).Elem()).Interface().(client.Object)
+}
+
+func unstructuredFromResourceRef(ref templatesv1.ResourceRef) (*unstructured.Unstructured, error) {
+	objMeta, err := object.ParseObjMetadata(ref.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse object ID %s: %w", ref.ID, err)
+	}
+	u := unstructured.Unstructured{}
+	u.SetGroupVersionKind(objMeta.GroupKind.WithVersion(ref.Version))
+	u.SetName(objMeta.Name)
+	u.SetNamespace(objMeta.Namespace)
+
+	return &u, nil
 }

@@ -5,21 +5,24 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/pointer"
 )
 
-// MakeTestDeployment creates a new Deployment and apply the opts to it.
-func MakeTestDeployment(name types.NamespacedName, opts ...func(*appsv1.Deployment)) *appsv1.Deployment {
+// DefaultNamespace is the namespace used for new resources, this can be
+// overridden via an option.'
+const DefaultNamespace = "flux-system"
+
+// NewDeployment creates a new Deployment and apply the opts to it.
+func NewDeployment(name string, opts ...func(*appsv1.Deployment)) *appsv1.Deployment {
 	deploy := &appsv1.Deployment{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "Deployment",
 			APIVersion: "apps/v1",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      name.Name,
-			Namespace: name.Namespace,
+			Name:      name,
+			Namespace: DefaultNamespace,
 		},
 		Spec: appsv1.DeploymentSpec{
 			Replicas:                pointer.Int32(1),
@@ -27,7 +30,7 @@ func MakeTestDeployment(name types.NamespacedName, opts ...func(*appsv1.Deployme
 			RevisionHistoryLimit:    pointer.Int32(10),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					"app": name.Name,
+					"app": name,
 				},
 			},
 			Strategy: appsv1.DeploymentStrategy{
@@ -44,7 +47,7 @@ func MakeTestDeployment(name types.NamespacedName, opts ...func(*appsv1.Deployme
 						"prometheus.io/scrape": "true",
 					},
 					Labels: map[string]string{
-						"app": name.Name,
+						"app": name,
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -155,4 +158,47 @@ func MakeTestDeployment(name types.NamespacedName, opts ...func(*appsv1.Deployme
 	}
 
 	return deploy
+}
+
+// NewServiceForDeployment creates a new Service with the correct labels
+// for a Deployment and applies the opts to it.
+func NewServiceForDeployment(deploy *appsv1.Deployment, opts ...func(*corev1.Service)) *corev1.Service {
+	return NewService(deploy.GetName(), append(opts, func(svc *corev1.Service) {
+		svc.ObjectMeta.Namespace = deploy.GetNamespace()
+		svc.Spec.Selector = deploy.Spec.Selector.MatchLabels
+	})...)
+}
+
+// NewService creates and returns a new Service.
+func NewService(name string, opts ...func(*corev1.Service)) *corev1.Service {
+	svc := &corev1.Service{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Service",
+			APIVersion: "v1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: DefaultNamespace,
+		},
+		Spec: corev1.ServiceSpec{
+			IPFamilies: []corev1.IPFamily{
+				corev1.IPv4Protocol,
+			},
+			Type: corev1.ServiceTypeClusterIP,
+			Ports: []corev1.ServicePort{
+				{
+					Port:       80,
+					Name:       "http",
+					TargetPort: intstr.FromString("http"),
+				},
+			},
+		},
+	}
+
+	for _, opt := range opts {
+		opt(svc)
+	}
+
+	return svc
+
 }

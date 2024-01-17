@@ -10,11 +10,11 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -65,11 +65,11 @@ func TestReconciliation(t *testing.T) {
 	}
 
 	test.AssertNoError(t, reconciler.SetupWithManager(mgr))
-	test.AssertNoError(t, k8sClient.Create(context.TODO(), test.NewNamespace("test-ns")))
+	test.AssertNoError(t, k8sClient.Create(context.TODO(), test.NewNamespace("flux-system")))
 
 	t.Run("reconciling creation of new deployment with shard", func(t *testing.T) {
 		ctx := context.TODO()
-		srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
+		srcDeployment := test.NewDeployment("kustomize-controller", func(d *appsv1.Deployment) {
 			d.Spec.Template.Spec.Containers[0].Args = []string{
 				"--watch-label-selector=!sharding.fluxcd.io/key",
 			}
@@ -89,11 +89,11 @@ func TestReconciliation(t *testing.T) {
 		})
 
 		test.AssertNoError(t, k8sClient.Create(ctx, shardSet))
-		defer deleteFluxShardSet(t, k8sClient, shardSet)
+		defer test.DeleteFluxShardSet(t, k8sClient, shardSet)
 
 		reconcileAndReload(t, k8sClient, reconciler, shardSet)
 
-		wantDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller-shard-1"), func(d *appsv1.Deployment) {
+		wantDeployment := test.NewDeployment("kustomize-controller-shard-1", func(d *appsv1.Deployment) {
 			d.ObjectMeta.Labels = map[string]string{
 				"templates.weave.works/shard-set": "test-shard-set",
 				"app.kubernetes.io/managed-by":    "flux-shard-controller",
@@ -108,22 +108,24 @@ func TestReconciliation(t *testing.T) {
 
 		// Check inventory updated with fluxshardset and new deployment(want) and condition of number of resources created
 		test.AssertInventoryHasItems(t, shardSet, want...)
-		assertFluxShardSetCondition(t, shardSet, meta.ReadyCondition, "1 shard(s) created")
-
+		assertFluxShardSetCondition(t, shardSet, meta.ReadyCondition, "1 resources created")
 		// Check deployments existing include the new deployment
-		assertDeploymentsExist(t, k8sClient, "default", "kustomize-controller", "kustomize-controller-shard-1")
+		assertDeploymentsExist(t, k8sClient, shardSet.Namespace, "kustomize-controller", "kustomize-controller-shard-1")
 	})
 
-	t.Run("reconciling creation of new deployment when it already exists", func(t *testing.T) {
+	t.Run("reconciling creation of new deployment with service", func(t *testing.T) {
 		ctx := context.TODO()
-
-		srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
+		srcDeployment := test.NewDeployment("kustomize-controller", func(d *appsv1.Deployment) {
 			d.Spec.Template.Spec.Containers[0].Args = []string{
 				"--watch-label-selector=!sharding.fluxcd.io/key",
 			}
 		})
 		test.AssertNoError(t, k8sClient.Create(ctx, srcDeployment))
 		defer deleteObject(t, k8sClient, srcDeployment)
+
+		srcService := test.NewService("kustomize-controller")
+		test.AssertNoError(t, k8sClient.Create(ctx, srcService))
+		defer deleteObject(t, k8sClient, srcService)
 
 		shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
 			set.Spec.Shards = []templatesv1.ShardSpec{
@@ -137,9 +139,62 @@ func TestReconciliation(t *testing.T) {
 		})
 
 		test.AssertNoError(t, k8sClient.Create(ctx, shardSet))
-		defer deleteFluxShardSet(t, k8sClient, shardSet)
+		defer test.DeleteFluxShardSet(t, k8sClient, shardSet)
 
-		shard1 := test.MakeTestDeployment(nsn("default", "kustomize-controller-shard-1"), func(d *appsv1.Deployment) {
+		reconcileAndReload(t, k8sClient, reconciler, shardSet)
+
+		wantDeployment := test.NewDeployment("kustomize-controller-shard-1", func(d *appsv1.Deployment) {
+			d.ObjectMeta.Labels = map[string]string{
+				"templates.weave.works/shard-set": "test-shard-set",
+				"app.kubernetes.io/managed-by":    "flux-shard-controller",
+			}
+			d.Spec.Template.Spec.Containers[0].Args = []string{
+				"--watch-label-selector=sharding.fluxcd.io/key in (shard-1)",
+			}
+		})
+		wantService := test.NewService("kustomize-controller-shard-1")
+		want := []runtime.Object{
+			wantDeployment,
+			wantService,
+		}
+
+		// Check inventory updated with fluxshardset and new deployment(want) and condition of number of resources created
+		test.AssertInventoryHasItems(t, shardSet, want...)
+		assertFluxShardSetCondition(t, shardSet, meta.ReadyCondition, "2 resources created")
+		// Check deployments existing include the new deployment
+		assertDeploymentsExist(t, k8sClient, shardSet.Namespace, "kustomize-controller", "kustomize-controller-shard-1")
+		assertServicesExist(t, k8sClient, shardSet.Namespace, "kustomize-controller", "kustomize-controller-shard-1")
+	})
+
+	t.Run("reconciling creation of new deployment when it already exists", func(t *testing.T) {
+		ctx := context.TODO()
+
+		srcDeployment := test.NewDeployment("kustomize-controller", func(d *appsv1.Deployment) {
+			d.Spec.Template.Spec.Containers[0].Args = []string{
+				"--watch-label-selector=!sharding.fluxcd.io/key",
+			}
+		})
+		test.AssertNoError(t, k8sClient.Create(ctx, srcDeployment))
+		defer deleteObject(t, k8sClient, srcDeployment)
+		srcService := test.NewService("kustomize-controller")
+		test.AssertNoError(t, k8sClient.Create(ctx, srcService))
+		defer deleteObject(t, k8sClient, srcService)
+
+		shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
+			set.Spec.Shards = []templatesv1.ShardSpec{
+				{
+					Name: "shard-1",
+				},
+			}
+			set.Spec.SourceDeploymentRef = templatesv1.SourceDeploymentReference{
+				Name: srcDeployment.Name,
+			}
+		})
+
+		test.AssertNoError(t, k8sClient.Create(ctx, shardSet))
+		defer test.DeleteFluxShardSet(t, k8sClient, shardSet)
+
+		shard1 := test.NewDeployment("kustomize-controller-shard-1", func(d *appsv1.Deployment) {
 			d.ObjectMeta.Labels = map[string]string{
 				"templates.weave.works/shard-set": "test-shard-set",
 				"app.kubernetes.io/managed-by":    "flux-shard-controller",
@@ -153,7 +208,7 @@ func TestReconciliation(t *testing.T) {
 
 		// Reconcile
 		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(shardSet)})
-		test.AssertErrorMatch(t, `failed to create Deployment: deployments.apps "kustomize-controller-shard-1" already exists`, err)
+		test.AssertErrorMatch(t, `failed to create resource: deployments.apps "kustomize-controller-shard-1" already exists`, err)
 
 		// reload the shardset
 		test.AssertNoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(shardSet), shardSet))
@@ -162,18 +217,21 @@ func TestReconciliation(t *testing.T) {
 			t.Errorf("expected Inventory to be nil, but got %v", shardSet.Status.Inventory)
 		}
 		assertFluxShardSetCondition(t, shardSet, meta.ReadyCondition,
-			`failed to create Deployment: deployments.apps "kustomize-controller-shard-1" already exists`)
+			`failed to create resource: deployments.apps "kustomize-controller-shard-1" already exists`)
 	})
 
 	t.Run("Delete resources when removing shard from fluxshardset shards", func(t *testing.T) {
 		ctx := context.TODO()
-		srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
+		srcDeployment := test.NewDeployment("kustomize-controller", func(d *appsv1.Deployment) {
 			d.Spec.Template.Spec.Containers[0].Args = []string{
 				"--watch-label-selector=!sharding.fluxcd.io/key",
 			}
 		})
 		test.AssertNoError(t, k8sClient.Create(ctx, srcDeployment))
 		defer deleteObject(t, k8sClient, srcDeployment)
+		srcService := test.NewService("kustomize-controller")
+		test.AssertNoError(t, k8sClient.Create(ctx, srcService))
+		defer deleteObject(t, k8sClient, srcService)
 
 		// Create shard set and src deployment
 		shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
@@ -190,14 +248,14 @@ func TestReconciliation(t *testing.T) {
 			}
 		})
 		test.AssertNoError(t, k8sClient.Create(ctx, shardSet))
-		defer deleteFluxShardSet(t, k8sClient, shardSet)
+		defer test.DeleteFluxShardSet(t, k8sClient, shardSet)
 
 		reconcileAndReload(t, k8sClient, reconciler, shardSet)
 
 		// Check fluxshardset
-		assertDeploymentsExist(t, k8sClient, "default", "kustomize-controller", "kustomize-controller-shard-1", "kustomize-controller-shard-2")
+		assertDeploymentsExist(t, k8sClient, shardSet.Namespace, "kustomize-controller", "kustomize-controller-shard-1", "kustomize-controller-shard-2")
 
-		shard1Deploy := test.MakeTestDeployment(nsn("default", "kustomize-controller-shard-1"), func(d *appsv1.Deployment) {
+		shard1Deploy := test.NewDeployment("kustomize-controller-shard-1", func(d *appsv1.Deployment) {
 			d.ObjectMeta.Labels = map[string]string{
 				"templates.weave.works/shard-set": "test-shard-set",
 				"app.kubernetes.io/managed-by":    "flux-shard-controller",
@@ -207,7 +265,7 @@ func TestReconciliation(t *testing.T) {
 			}
 		})
 
-		shard2Deploy := test.MakeTestDeployment(nsn("default", "kustomize-controller-shard-2"), func(d *appsv1.Deployment) {
+		shard2Deploy := test.NewDeployment("kustomize-controller-shard-2", func(d *appsv1.Deployment) {
 			d.ObjectMeta.Labels = map[string]string{
 				"templates.weave.works/shard-set": "test-shard-set",
 				"app.kubernetes.io/managed-by":    "flux-shard-controller",
@@ -216,7 +274,9 @@ func TestReconciliation(t *testing.T) {
 				"--watch-label-selector=sharding.fluxcd.io/key in (shard-2)",
 			}
 		})
-		test.AssertInventoryHasItems(t, shardSet, shard1Deploy, shard2Deploy)
+		test.AssertInventoryHasItems(t, shardSet, shard1Deploy, shard2Deploy,
+			test.NewService("kustomize-controller-shard-1"),
+			test.NewService("kustomize-controller-shard-2"))
 
 		// Update shard set by removing shard-2
 		shardSet.Spec.Shards = []templatesv1.ShardSpec{
@@ -228,20 +288,24 @@ func TestReconciliation(t *testing.T) {
 		reconcileAndReload(t, k8sClient, reconciler, shardSet)
 
 		// Check deployment for shard-1 exists and deployment for shard-2 is deleted
-		test.AssertInventoryHasItems(t, shardSet, shard1Deploy)
-		assertDeploymentsExist(t, k8sClient, "default", "kustomize-controller", "kustomize-controller-shard-1")
-		assertDeploymentsDontExist(t, k8sClient, "default", "shard-2-kustomize-controller")
+		test.AssertInventoryHasItems(t, shardSet, shard1Deploy, test.NewService("kustomize-controller-shard-1"))
+		assertDeploymentsExist(t, k8sClient, shardSet.Namespace, "kustomize-controller", "kustomize-controller-shard-1")
+		assertServicesExist(t, k8sClient, shardSet.Namespace, "kustomize-controller", "kustomize-controller-shard-1")
+		assertDeploymentsDontExist(t, k8sClient, shardSet.Namespace, "shard-2-kustomize-controller")
 	})
 
 	t.Run("Create new deployments with new shard names and delete old deployments after removing shard names", func(t *testing.T) {
 		ctx := context.TODO()
-		srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
+		srcDeployment := test.NewDeployment("kustomize-controller", func(d *appsv1.Deployment) {
 			d.Spec.Template.Spec.Containers[0].Args = []string{
 				"--watch-label-selector=!sharding.fluxcd.io/key",
 			}
 		})
 		test.AssertNoError(t, k8sClient.Create(ctx, srcDeployment))
 		defer k8sClient.Delete(ctx, srcDeployment)
+		srcService := test.NewService("kustomize-controller")
+		test.AssertNoError(t, k8sClient.Create(ctx, srcService))
+		defer deleteObject(t, k8sClient, srcService)
 
 		// Create shard set and src deployment
 		shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
@@ -258,11 +322,14 @@ func TestReconciliation(t *testing.T) {
 			}
 		})
 		test.AssertNoError(t, k8sClient.Create(ctx, shardSet))
-		defer deleteFluxShardSet(t, k8sClient, shardSet)
+		defer test.DeleteFluxShardSet(t, k8sClient, shardSet)
 
 		reconcileAndReload(t, k8sClient, reconciler, shardSet)
 
-		assertDeploymentsExist(t, k8sClient, "default", "kustomize-controller", "kustomize-controller-shard-a", "kustomize-controller-shard-b")
+		assertDeploymentsExist(t, k8sClient, shardSet.Namespace,
+			"kustomize-controller", "kustomize-controller-shard-a", "kustomize-controller-shard-b")
+		assertServicesExist(t, k8sClient, shardSet.Namespace,
+			"kustomize-controller", "kustomize-controller-shard-a", "kustomize-controller-shard-b")
 
 		// Removing shard
 		shardSet.Spec.Shards = []templatesv1.ShardSpec{
@@ -277,7 +344,7 @@ func TestReconciliation(t *testing.T) {
 		reconcileAndReload(t, k8sClient, reconciler, shardSet)
 
 		createDeployment := func(shardID string) *appsv1.Deployment {
-			return test.MakeTestDeployment(nsn("default", "kustomize-controller-"+shardID), func(d *appsv1.Deployment) {
+			return test.NewDeployment("kustomize-controller-"+shardID, func(d *appsv1.Deployment) {
 				d.ObjectMeta.Labels = map[string]string{
 					"templates.weave.works/shard-set": "test-shard-set",
 					"app.kubernetes.io/managed-by":    "flux-shard-controller",
@@ -288,19 +355,30 @@ func TestReconciliation(t *testing.T) {
 			})
 		}
 
-		test.AssertInventoryHasItems(t, shardSet, createDeployment("shard-a"), createDeployment("shard-c"))
-		assertDeploymentsExist(t, k8sClient, "default", "kustomize-controller", "kustomize-controller-shard-a", "kustomize-controller-shard-c")
-		assertDeploymentsDontExist(t, k8sClient, "default", "shard-b-kustomize-controller")
+		test.AssertInventoryHasItems(t, shardSet,
+			createDeployment("shard-a"), createDeployment("shard-c"),
+			test.NewService("kustomize-controller-shard-a"),
+			test.NewService("kustomize-controller-shard-c"),
+		)
+		assertDeploymentsExist(t, k8sClient, shardSet.Namespace, "kustomize-controller",
+			"kustomize-controller-shard-a", "kustomize-controller-shard-c")
+		assertServicesExist(t, k8sClient, shardSet.Namespace, "kustomize-controller",
+			"kustomize-controller-shard-a", "kustomize-controller-shard-c")
+		assertDeploymentsDontExist(t, k8sClient, shardSet.Namespace, "kustomize-controller-shard-b")
+		assertServicesDontExist(t, k8sClient, shardSet.Namespace, "kustomize-controller-shard-b")
 	})
 
 	t.Run("don't create deployments if src deployment not ignoring sharding", func(t *testing.T) {
 		ctx := context.TODO()
-		srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
+		srcDeployment := test.NewDeployment("kustomize-controller", func(d *appsv1.Deployment) {
 			d.Annotations = map[string]string{}
 			d.ObjectMeta.Name = "kustomize-controller"
 		})
 		test.AssertNoError(t, k8sClient.Create(ctx, srcDeployment))
 		defer k8sClient.Delete(ctx, srcDeployment)
+		srcService := test.NewService("kustomize-controller")
+		test.AssertNoError(t, k8sClient.Create(ctx, srcService))
+		defer deleteObject(t, k8sClient, srcService)
 
 		// Create shard set and src deployment
 		shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
@@ -314,9 +392,9 @@ func TestReconciliation(t *testing.T) {
 			}
 		})
 		test.AssertNoError(t, k8sClient.Create(ctx, shardSet))
-		defer deleteFluxShardSet(t, k8sClient, shardSet)
+		defer test.DeleteFluxShardSet(t, k8sClient, shardSet)
 
-		expectedErrMsg := "failed to generate deployments: deployment default/kustomize-controller is not configured to ignore sharding"
+		expectedErrMsg := `failed to generate deployments: deployment flux-system/kustomize-controller is not configured to ignore sharding`
 		reconcileWithErrorAndReload(t, k8sClient, reconciler, shardSet, expectedErrMsg)
 
 		assertFluxShardSetCondition(t, shardSet, meta.ReadyCondition, expectedErrMsg)
@@ -324,9 +402,8 @@ func TestReconciliation(t *testing.T) {
 
 	t.Run("Update generated deployments when src deployment updated existing annotations", func(t *testing.T) {
 		ctx := context.TODO()
-
 		// Create shard set and src deployment
-		srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
+		srcDeployment := test.NewDeployment("kustomize-controller", func(d *appsv1.Deployment) {
 			d.Spec.Template.Spec.Containers[0].Args = []string{
 				"--watch-label-selector=!sharding.fluxcd.io/key",
 			}
@@ -337,6 +414,9 @@ func TestReconciliation(t *testing.T) {
 		})
 		test.AssertNoError(t, k8sClient.Create(ctx, srcDeployment))
 		defer k8sClient.Delete(ctx, srcDeployment)
+		srcService := test.NewService("kustomize-controller")
+		test.AssertNoError(t, k8sClient.Create(ctx, srcService))
+		defer deleteObject(t, k8sClient, srcService)
 
 		shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
 			set.Spec.Shards = []templatesv1.ShardSpec{
@@ -350,11 +430,11 @@ func TestReconciliation(t *testing.T) {
 		})
 
 		test.AssertNoError(t, k8sClient.Create(ctx, shardSet))
-		defer deleteFluxShardSet(t, k8sClient, shardSet)
+		defer test.DeleteFluxShardSet(t, k8sClient, shardSet)
 
 		reconcileAndReload(t, k8sClient, reconciler, shardSet)
 
-		shard1Deploy := test.MakeTestDeployment(nsn("default", "kustomize-controller-shard-1"), func(d *appsv1.Deployment) {
+		shard1Deploy := test.NewDeployment("kustomize-controller-shard-1", func(d *appsv1.Deployment) {
 			d.ObjectMeta.Labels = test.ShardLabels("shard-1")
 			d.Spec.Template.Spec.Containers[0].Args = []string{
 				"--watch-label-selector=sharding.fluxcd.io/key in (shard-1)",
@@ -376,13 +456,12 @@ func TestReconciliation(t *testing.T) {
 
 		// Update src deployment
 		srcDeployment.Annotations = map[string]string{
-			"deployment.kubernetes.io/revision": "1",
-			"test-annot":                        "test",
+			"testing-annotation": "test",
 		}
 		test.AssertNoError(t, k8sClient.Update(ctx, srcDeployment))
 
 		shard1Deploy.Annotations = map[string]string{
-			"test-annot": "test",
+			"testing-annotation": "test",
 		}
 		reconcileAndReload(t, k8sClient, reconciler, shardSet)
 
@@ -392,14 +471,13 @@ func TestReconciliation(t *testing.T) {
 			t.Fatalf("generated deployments don't match expected, diff: %s", diff)
 		}
 
-		test.AssertInventoryHasItems(t, shardSet, shard1Deploy)
-
+		test.AssertInventoryHasItems(t, shardSet, shard1Deploy, test.NewService("kustomize-controller-shard-1"))
 	})
 
 	t.Run("Update generated deployments when src deployment updated existing container image", func(t *testing.T) {
 		ctx := context.TODO()
 		// Create shard set and src deployment
-		srcDeployment := test.MakeTestDeployment(nsn("default", "kustomize-controller"), func(d *appsv1.Deployment) {
+		srcDeployment := test.NewDeployment("kustomize-controller", func(d *appsv1.Deployment) {
 			d.Spec.Template.Spec.Containers[0].Args = []string{
 				"--watch-label-selector=!sharding.fluxcd.io/key",
 			}
@@ -408,6 +486,9 @@ func TestReconciliation(t *testing.T) {
 		})
 		test.AssertNoError(t, k8sClient.Create(ctx, srcDeployment))
 		defer k8sClient.Delete(ctx, srcDeployment)
+		srcService := test.NewService("kustomize-controller")
+		test.AssertNoError(t, k8sClient.Create(ctx, srcService))
+		defer deleteObject(t, k8sClient, srcService)
 
 		shardSet := test.NewFluxShardSet(func(set *templatesv1.FluxShardSet) {
 			set.Spec.Shards = []templatesv1.ShardSpec{
@@ -420,10 +501,10 @@ func TestReconciliation(t *testing.T) {
 			}
 		})
 		test.AssertNoError(t, k8sClient.Create(ctx, shardSet))
-		defer deleteFluxShardSet(t, k8sClient, shardSet)
+		defer test.DeleteFluxShardSet(t, k8sClient, shardSet)
 		reconcileAndReload(t, k8sClient, reconciler, shardSet)
 
-		shard1Deploy := test.MakeTestDeployment(nsn("default", "kustomize-controller-shard-1"), func(d *appsv1.Deployment) {
+		shard1Deploy := test.NewDeployment("kustomize-controller-shard-1", func(d *appsv1.Deployment) {
 			d.ObjectMeta.Labels = test.ShardLabels("shard-1")
 			d.Spec.Template.ObjectMeta.Labels = test.ShardLabels("shard-1")
 			d.Spec.Template.Spec.Containers[0].Args = []string{
@@ -446,17 +527,16 @@ func TestReconciliation(t *testing.T) {
 		// Update src deployment container image version and shard1Deploy
 		srcDeployment.Spec.Template.Spec.Containers[0].Image = "ghcr.io/fluxcd/kustomize-controller:v0.35.2"
 		test.AssertNoError(t, k8sClient.Update(ctx, srcDeployment))
-
-		shard1Deploy.Spec.Template.Spec.Containers[0].Image = "ghcr.io/fluxcd/kustomize-controller:v0.35.2"
 		reconcileAndReload(t, k8sClient, reconciler, shardSet)
 
+		shard1Deploy.Spec.Template.Spec.Containers[0].Image = "ghcr.io/fluxcd/kustomize-controller:v0.35.2"
 		updatedGenDepl := &appsv1.Deployment{}
 		test.AssertNoError(t, k8sClient.Get(ctx, client.ObjectKeyFromObject(shard1Deploy), updatedGenDepl))
 		if diff := cmp.Diff(updatedGenDepl, shard1Deploy, ignoreObjectMeta, ignoreTypeMeta); diff != "" {
-			t.Fatalf("generated deployments don't match expected, diff: %s", diff)
+			t.Fatalf("updated deployment doesn't match expected, diff: %s", diff)
 		}
 
-		test.AssertInventoryHasItems(t, shardSet, shard1Deploy)
+		test.AssertInventoryHasItems(t, shardSet, shard1Deploy, test.NewService("kustomize-controller-shard-1"))
 	})
 }
 
@@ -471,6 +551,20 @@ func assertDeploymentsExist(t *testing.T, cl client.Client, ns string, want ...s
 	}
 	if diff := cmp.Diff(want, existingDeps); diff != "" {
 		t.Fatalf("didn't find deployments, got different names: \n%s", diff)
+	}
+}
+
+func assertServicesExist(t *testing.T, cl client.Client, ns string, want ...string) {
+	t.Helper()
+	sl := &corev1.ServiceList{}
+	test.AssertNoError(t, cl.List(context.TODO(), sl, client.InNamespace(ns)))
+
+	existingSvcs := []string{}
+	for _, svc := range sl.Items {
+		existingSvcs = append(existingSvcs, svc.Name)
+	}
+	if diff := cmp.Diff(want, existingSvcs); diff != "" {
+		t.Fatalf("didn't find services, got different names: \n%s", diff)
 	}
 }
 
@@ -489,6 +583,30 @@ func assertDeploymentsDontExist(t *testing.T, cl client.Client, ns string, deps 
 		for _, existingDep := range existingDeps {
 			if dep == existingDep {
 				matches = append(matches, dep)
+			}
+		}
+	}
+	if len(matches) > 0 {
+		cmp.Diff(matches, []string{})
+		t.Fatalf("found deployments that shouldn't be found:\n%s", cmp.Diff(matches, []string{}))
+	}
+}
+
+func assertServicesDontExist(t *testing.T, cl client.Client, ns string, svcs ...string) {
+	t.Helper()
+	sl := &corev1.ServiceList{}
+	test.AssertNoError(t, cl.List(context.TODO(), sl, client.InNamespace(ns)))
+
+	existingSvcs := []string{}
+	for _, svc := range sl.Items {
+		existingSvcs = append(existingSvcs, svc.Name)
+	}
+
+	matches := []string{}
+	for _, svc := range svcs {
+		for _, existingSvc := range existingSvcs {
+			if svc == existingSvc {
+				matches = append(matches, svc)
 			}
 		}
 	}
@@ -530,31 +648,9 @@ func reconcileWithErrorAndReload(t *testing.T, cl client.Client, reconciler *Flu
 	test.AssertNoError(t, cl.Get(ctx, client.ObjectKeyFromObject(shardSet), shardSet))
 }
 
-func deleteFluxShardSet(t *testing.T, cl client.Client, shardset *templatesv1.FluxShardSet) {
-	ctx := context.TODO()
-	t.Helper()
-
-	test.AssertNoError(t, cl.Get(ctx, client.ObjectKeyFromObject(shardset), shardset))
-
-	if shardset.Status.Inventory != nil {
-		for _, v := range shardset.Status.Inventory.Entries {
-			d, err := deploymentFromResourceRef(v)
-			test.AssertNoError(t, err)
-			test.AssertNoError(t, cl.Delete(ctx, d))
-		}
-	}
-
-	test.AssertNoError(t, cl.Delete(ctx, shardset))
-}
-
-func nsn(namespace, name string) types.NamespacedName {
-	return types.NamespacedName{
-		Name:      name,
-		Namespace: namespace,
-	}
-}
-
 func deleteObject(t *testing.T, cl client.Client, obj client.Object) {
 	t.Helper()
-	test.AssertNoError(t, cl.Delete(context.TODO(), obj))
+	if err := cl.Delete(context.TODO(), obj); err != nil {
+		t.Fatalf("failed to delete object during cleanup: %s", err)
+	}
 }
